@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@jgabor/opencode-neuralwatt",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenCode TUI plugin that shows Neuralwatt account quota, usage, and burn rate in a sidebar widget and panel.",
+  "exports": {
+    "./tui": {
+      "import": "./tui.tsx"
+    }
+  },
+  "files": [
+    "tui.tsx",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-tui",
+    "tui",
+    "neuralwatt",
+    "quota",
+    "usage"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jgabor/opencode-neuralwatt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jgabor/opencode-neuralwatt/issues"
+  },
+  "homepage": "https://github.com/jgabor/opencode-neuralwatt#readme",
+  "author": "jgabor",
+  "license": "MIT",
+  "engines": {
+    "opencode": "^1.0.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.1.42",
+    "@opentui/core": "^0.4.2",
+    "@opentui/solid": "^0.4.2",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.1.42",
+    "@opentui/core": "^0.4.2",
+    "@opentui/solid": "^0.4.2",
+    "@types/node": "^25.5.0",
+    "solid-js": "^1.9.12",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
