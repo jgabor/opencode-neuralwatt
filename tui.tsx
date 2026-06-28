@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 
 import { TextAttributes } from "@opentui/core"
-import { createSignal, type JSX } from "solid-js"
+import { createMemo, createSignal, type JSX } from "solid-js"
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
 
 // ---------------------------------------------------------------------------
@@ -391,22 +391,36 @@ function SidebarView(props: {
   onOpen: () => void
 }) {
   const theme = props.api.theme.current
-  const q = props.quota()
-  const err = props.error()
 
-  const creditColor: ThemeColor =
-    q && q.balance.credits_remaining_usd <= 0 ? "error" : "primary"
-  const creditUsedPct =
-    q && q.balance.total_credits_usd > 0
-      ? (q.balance.credits_used_usd / q.balance.total_credits_usd) * 100
+  const q = createMemo(() => props.quota())
+  const err = createMemo(() => props.error())
+
+  const creditColor = createMemo<ThemeColor>(() =>
+    q() && q()!.balance.credits_remaining_usd <= 0 ? "error" : "primary",
+  )
+  const creditUsedPct = createMemo(() =>
+    q() && q()!.balance.total_credits_usd > 0
+      ? (q()!.balance.credits_used_usd / q()!.balance.total_credits_usd) * 100
+      : 0,
+  )
+  const sub = createMemo(() => q()?.subscription ?? null)
+  const hasKwh = createMemo(() => {
+    const s = sub()
+    return Boolean(s && (s.kwh_included ?? 0) > 0)
+  })
+  const kwhUsedPct = createMemo(() => {
+    const s = sub()
+    return hasKwh() && s && s.kwh_included! > 0
+      ? (s.kwh_used! / s.kwh_included!) * 100
       : 0
-  const sub = q?.subscription ?? null
-  const hasKwh = sub && (sub.kwh_included ?? 0) > 0
-  const kwhUsedPct =
-    hasKwh && sub.kwh_included! > 0 ? (sub.kwh_used! / sub.kwh_included!) * 100 : 0
-  const kwhColor: ThemeColor = hasKwh && sub.in_overage ? "error" : "primary"
-  const accountingColor: ThemeColor =
-    q?.balance.accounting_method === "energy" ? "success" : "info"
+  })
+  const kwhColor = createMemo<ThemeColor>(() => {
+    const s = sub()
+    return hasKwh() && s && s.in_overage ? "error" : "primary"
+  })
+  const accountingColor = createMemo<ThemeColor>(() =>
+    q()?.balance.accounting_method === "energy" ? "success" : "info",
+  )
 
   return (
     <box
@@ -427,29 +441,29 @@ function SidebarView(props: {
             Neuralwatt
           </text>
         </box>
-        <text fg={q ? theme[accountingColor] : theme.textMuted}>
-          {q ? q.balance.accounting_method : "loading"}
+        <text fg={q() ? theme[accountingColor()] : theme.textMuted}>
+          {q() ? q()!.balance.accounting_method : "loading"}
         </text>
       </box>
 
-      {err ? (
-        <text fg={theme.error}>{err}</text>
-      ) : q ? (
+      {err() ? (
+        <text fg={theme.error}>{err()}</text>
+      ) : q() ? (
         <>
           <box flexDirection="column" gap={0}>
             <LegendRow
               theme={theme}
               marker="█"
-              markerColor={creditColor}
+              markerColor={creditColor()}
               label="Credits used"
-              value={formatCurrency(q.balance.credits_used_usd)}
+              value={formatCurrency(q()!.balance.credits_used_usd)}
             />
             <LegendRow
               theme={theme}
               marker="░"
-              markerColor={creditColor === "error" ? "error" : "borderSubtle"}
+              markerColor={creditColor() === "error" ? "error" : "borderSubtle"}
               label="Credits remaining"
-              value={formatCurrency(q.balance.credits_remaining_usd)}
+              value={formatCurrency(q()!.balance.credits_remaining_usd)}
             />
             <LegendRow
               theme={theme}
@@ -457,25 +471,25 @@ function SidebarView(props: {
               markerColor="warning"
               label="Credits burn rate"
               value={estimateDuration(
-                q.balance.credits_remaining_usd,
-                burnRateCurrentMonth(q),
+                q()!.balance.credits_remaining_usd,
+                burnRateCurrentMonth(q()!),
               )}
             />
           </box>
 
           <SidebarUsageBlock
             theme={theme}
-            creditUsedPct={creditUsedPct}
-            creditColor={creditColor}
-            hasKwh={Boolean(hasKwh)}
-            sub={sub!}
-            kwhUsedPct={kwhUsedPct}
-            kwhColor={kwhColor}
-            kwhBurnRate={sub ? estimateDuration(sub.kwh_remaining ?? 0, burnRateKwh(sub, q.snapshot_at)) : "—"}
-            monthCost={q.usage.current_month.cost_usd}
-            monthKwh={q.usage.current_month.energy_kwh}
-            lifetimeCost={q.usage.lifetime.cost_usd}
-            lifetimeKwh={q.usage.lifetime.energy_kwh}
+            creditUsedPct={creditUsedPct()}
+            creditColor={creditColor()}
+            hasKwh={hasKwh()}
+            sub={sub()!}
+            kwhUsedPct={kwhUsedPct()}
+            kwhColor={kwhColor()}
+            kwhBurnRate={sub() ? estimateDuration(sub()!.kwh_remaining ?? 0, burnRateKwh(sub()!, q()!.snapshot_at)) : "—"}
+            monthCost={q()!.usage.current_month.cost_usd}
+            monthKwh={q()!.usage.current_month.energy_kwh}
+            lifetimeCost={q()!.usage.lifetime.cost_usd}
+            lifetimeKwh={q()!.usage.lifetime.energy_kwh}
           />
         </>
       ) : (
