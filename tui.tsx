@@ -2,7 +2,9 @@
 
 import { TextAttributes } from "@opentui/core";
 import { createMemo, createSignal, type JSX } from "solid-js";
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginModule, TuiPluginMeta } from "@opencode-ai/plugin/tui";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,16 +64,116 @@ type QuotaData = {
 // ---------------------------------------------------------------------------
 
 const API_BASE = "https://api.neuralwatt.com/v1";
+const NPM_REGISTRY = "https://registry.npmjs.org/@jgabor%2Fopencode-neuralwatt/latest";
 const REFRESH_INTERVAL_MS = 15_000;
 const RATE_LIMIT_BUFFER_MS = 1_100;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1_500;
 
 // ---------------------------------------------------------------------------
+// Update notifier
+// ---------------------------------------------------------------------------
+
+type UpdateStatus = "idle" | "checking" | "available" | "installing" | "installed" | "error";
+
+async function checkForUpdate(
+  meta: TuiPluginMeta,
+  setLatestVersion: (v: string | null) => void,
+  setUpdateStatus: (s: UpdateStatus) => void,
+): Promise<void> {
+  if (meta.source === "file") return;
+  const installed = meta.version;
+  if (!installed) return;
+  setUpdateStatus("checking");
+  try {
+    const res = await fetch(NPM_REGISTRY, { headers: { Accept: "application/json" } });
+    if (!res.ok) return;
+    const data = (await res.json()) as { version?: string };
+    if (!data.version) return;
+    setLatestVersion(data.version);
+    if (data.version !== installed) setUpdateStatus("available");
+    else setUpdateStatus("idle");
+  } catch {
+    setUpdateStatus("idle");
+  }
+}
+
+function specIsUnpinned(spec: string): boolean {
+  if (!spec.includes("@")) return true;
+  if (spec.endsWith("@latest")) return true;
+  return false;
+}
+
+async function bumpPinnedSpecInConfig(
+  api: TuiApi,
+  oldSpec: string,
+  latest: string,
+): Promise<void> {
+  if (specIsUnpinned(oldSpec)) return;
+  const newSpec = `@jgabor/opencode-neuralwatt@${latest}`;
+  const candidates = [
+    path.join(api.state.path.config, "opencode.json"),
+    path.join(api.state.path.config, "opencode.jsonc"),
+    path.join(api.state.path.directory, ".opencode", "opencode.json"),
+    path.join(api.state.path.directory, ".opencode", "opencode.jsonc"),
+    path.join(api.state.path.directory, ".opencode", "tui.json"),
+  ];
+  const escaped = oldSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escaped, "g");
+  await Promise.all(
+    candidates.map(async (file) => {
+      try {
+        const content = await fs.readFile(file, "utf8");
+        if (!content.includes(oldSpec)) return;
+        await fs.writeFile(file, content.replace(re, newSpec), "utf8");
+      } catch {
+        // file missing or unreadable; skip
+      }
+    }),
+  );
+}
+
+async function installLatestVersion(
+  api: TuiApi,
+  meta: TuiPluginMeta,
+  latest: string,
+  setUpdateStatus: (s: UpdateStatus) => void,
+  setUpdateError: (e: string | null) => void,
+): Promise<void> {
+  setUpdateStatus("installing");
+  setUpdateError(null);
+  try {
+    if (specIsUnpinned(meta.spec)) {
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+      if (home) {
+        const cacheDir = path.join(home, ".cache/opencode/packages/@jgabor/opencode-neuralwatt@latest");
+        await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+    const spec = `@jgabor/opencode-neuralwatt@${latest}`;
+    const result = await api.plugins.install(spec, { global: true });
+    if (!result.ok) throw new Error(result.message);
+    await bumpPinnedSpecInConfig(api, meta.spec, latest);
+    setUpdateStatus("installed");
+    api.ui.toast({
+      variant: "success",
+      title: "Neuralwatt",
+      message: `Updated to ${latest}. Restart OpenCode to apply.`,
+      duration: 8000,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setUpdateStatus("error");
+    setUpdateError(msg);
+    api.ui.toast({ variant: "error", title: "Update failed", message: msg });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 
-const tui: TuiPlugin = async (api) => {
+const tui: TuiPlugin = async (api, _options, meta) => {
   type QuotaSlotAPI = Parameters<NonNullable<TuiPluginModule["tui"]>>[0];
 
   const apiKey = process.env.NEURALWATT_API_KEY;
@@ -79,6 +181,20 @@ const tui: TuiPlugin = async (api) => {
   const [quota, setQuota] = createSignal<QuotaData | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
+  const [latestVersion, setLatestVersion] = createSignal<string | null>(null);
+  const [updateStatus, setUpdateStatus] = createSignal<UpdateStatus>("idle");
+  const [updateError, setUpdateError] = createSignal<string | null>(null);
+
+  const runInstall = () =>
+    installLatestVersion(
+      api as TuiApi,
+      meta,
+      latestVersion() ?? "",
+      setUpdateStatus,
+      setUpdateError,
+    );
+
+  void checkForUpdate(meta, setLatestVersion, setUpdateStatus);
 
   let lastFetchAt = 0;
 
@@ -159,7 +275,18 @@ const tui: TuiPlugin = async (api) => {
       slashName: "nw",
       slashAliases: ["neuralwatt"],
       run: () =>
-        openPanel(api as QuotaSlotAPI, quota, error, updatedAt, fetchQuota),
+        openPanel(
+          api as QuotaSlotAPI,
+          quota,
+          error,
+          updatedAt,
+          fetchQuota,
+          meta,
+          latestVersion,
+          updateStatus,
+          updateError,
+          runInstall,
+        ),
     },
   ];
 
@@ -188,6 +315,10 @@ const tui: TuiPlugin = async (api) => {
               quota={quota}
               error={error}
               updatedAt={updatedAt}
+              latestVersion={latestVersion}
+              updateStatus={updateStatus}
+              updateError={updateError}
+              onInstall={runInstall}
               onOpen={() =>
                 openPanel(
                   api as QuotaSlotAPI,
@@ -195,6 +326,11 @@ const tui: TuiPlugin = async (api) => {
                   error,
                   updatedAt,
                   fetchQuota,
+                  meta,
+                  latestVersion,
+                  updateStatus,
+                  updateError,
+                  runInstall,
                 )
               }
             />
@@ -215,6 +351,11 @@ function openPanel(
   error: () => string | null,
   updatedAt: () => Date | null,
   refresh: () => Promise<void>,
+  meta: TuiPluginMeta,
+  latestVersion: () => string | null,
+  updateStatus: () => UpdateStatus,
+  updateError: () => string | null,
+  onInstall: () => Promise<void>,
 ) {
   api.ui.dialog.setSize("xlarge");
   api.ui.dialog.replace(() => (
@@ -225,6 +366,11 @@ function openPanel(
       updatedAt={updatedAt}
       onRefresh={refresh}
       onClose={() => api.ui.dialog.clear()}
+      meta={meta}
+      latestVersion={latestVersion}
+      updateStatus={updateStatus}
+      updateError={updateError}
+      onInstall={onInstall}
     />
   ));
 }
@@ -236,6 +382,11 @@ function QuotaPanel(props: {
   updatedAt: () => Date | null;
   onRefresh: () => Promise<void>;
   onClose: () => void;
+  meta: TuiPluginMeta;
+  latestVersion: () => string | null;
+  updateStatus: () => UpdateStatus;
+  updateError: () => string | null;
+  onInstall: () => Promise<void>;
 }) {
   const theme = props.api.theme.current;
 
@@ -270,8 +421,8 @@ function QuotaPanel(props: {
           <text fg={theme.primary} attributes={TextAttributes.BOLD}>
             Neuralwatt
           </text>
-          <text fg={theme.text} attributes={TextAttributes.BOLD}>
-            Quota
+          <text fg={theme.textMuted}>
+            {props.meta.version ? `v${props.meta.version}` : "Quota"}
           </text>
         </box>
         <text fg={theme.textMuted} onMouseUp={props.onClose}>
@@ -302,6 +453,13 @@ function QuotaPanel(props: {
 
           {q() ? (
             <>
+              <UpdateNotice
+                theme={theme}
+                latestVersion={props.latestVersion}
+                updateStatus={props.updateStatus}
+                updateError={props.updateError}
+                onInstall={props.onInstall}
+              />
               <Card theme={theme} title="Balance">
                 <Metric
                   theme={theme}
@@ -510,6 +668,14 @@ function QuotaPanel(props: {
           {updated() ? `Updated ${formatDate(updated()!)}` : ""}
         </text>
         <box flexDirection="row" gap={1}>
+          {props.updateStatus() === "available" && props.latestVersion() ? (
+            <FooterButton
+              theme={theme}
+              label={`update ${props.latestVersion()}`}
+              accent
+              onClick={props.onInstall}
+            />
+          ) : null}
           <FooterButton
             theme={theme}
             label="refresh"
@@ -531,11 +697,69 @@ function QuotaPanel(props: {
 // Sidebar widget (DCP-style)
 // ---------------------------------------------------------------------------
 
+function UpdateNotice(props: {
+  theme: Theme;
+  latestVersion: () => string | null;
+  updateStatus: () => UpdateStatus;
+  updateError: () => string | null;
+  onInstall: () => Promise<void>;
+  compact?: boolean;
+}) {
+  const theme = props.theme;
+  const status = props.updateStatus();
+  const latest = props.latestVersion();
+  const compact = props.compact ?? false;
+
+  if (status === "available" && latest) {
+    return (
+      <box
+        flexDirection={compact ? "column" : "row"}
+        justifyContent={compact ? "flex-start" : "space-between"}
+        alignItems="flex-end"
+        onMouseUp={() => void props.onInstall()}
+      >
+        <box flexDirection="row" gap={1}>
+          <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+            {`⤓ Update: ${latest}`}
+          </text>
+        </box>
+        <text fg={theme.textMuted}>click to update</text>
+      </box>
+    );
+  }
+  if (status === "installing") {
+    return (
+      <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+        Installing update…
+      </text>
+    );
+  }
+  if (status === "installed") {
+    return (
+      <text fg={theme.success} attributes={TextAttributes.BOLD}>
+        {`Updated to ${latest}. Restart to apply.`}
+      </text>
+    );
+  }
+  if (status === "error") {
+    return (
+      <text fg={theme.error}>
+        {`Update failed: ${props.updateError() ?? "unknown error"}`}
+      </text>
+    );
+  }
+  return null;
+}
+
 function SidebarView(props: {
   api: TuiApi;
   quota: () => QuotaData | null;
   error: () => string | null;
   updatedAt: () => Date | null;
+  latestVersion: () => string | null;
+  updateStatus: () => UpdateStatus;
+  updateError: () => string | null;
+  onInstall: () => Promise<void>;
   onOpen: () => void;
 }) {
   const theme = props.api.theme.current;
@@ -661,6 +885,15 @@ function SidebarView(props: {
       ) : (
         <text fg={theme.textMuted}>Loading…</text>
       )}
+
+      <UpdateNotice
+        theme={theme}
+        latestVersion={props.latestVersion}
+        updateStatus={props.updateStatus}
+        updateError={props.updateError}
+        onInstall={props.onInstall}
+        compact
+      />
 
       <Divider theme={theme} />
     </box>
@@ -874,21 +1107,27 @@ function FooterButton(props: {
   theme: Theme;
   label: string;
   primary?: boolean;
+  accent?: boolean;
   onClick: () => void | Promise<void>;
 }) {
   const primary = props.primary ?? false;
+  const accent = props.accent ?? false;
+  const bg = primary
+    ? props.theme.primary
+    : accent
+      ? props.theme.accent
+      : props.theme.backgroundElement;
+  const fg = primary || accent
+    ? props.theme.selectedListItemText
+    : props.theme.text;
   return (
     <box
       paddingLeft={2}
       paddingRight={2}
-      backgroundColor={
-        primary ? props.theme.primary : props.theme.backgroundElement
-      }
+      backgroundColor={bg}
       onMouseUp={props.onClick}
     >
-      <text fg={primary ? props.theme.selectedListItemText : props.theme.text}>
-        {props.label}
-      </text>
+      <text fg={fg}>{props.label}</text>
     </box>
   );
 }
