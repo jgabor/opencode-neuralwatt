@@ -4,6 +4,7 @@ import { TextAttributes } from "@opentui/core";
 import { createMemo, createSignal, type JSX } from "solid-js";
 import type { TuiPlugin, TuiPluginModule, TuiPluginMeta } from "@opencode-ai/plugin/tui";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -83,33 +84,40 @@ const DEFAULT_RETRY_POLICY: RetryPolicy = {
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Resolve the per-platform user cache directory, mirroring Go's
+ * os.UserCacheDir() (what opencode uses to lay out `~/.cache/opencode/packages`):
+ *  - macOS: `$HOME/Library/Caches`
+ *  - Linux: `$XDG_CACHE_HOME` or `$HOME/.cache`
+ *  - Windows: `%LocalAppData%`
+ * Returns `null` if no platform-appropriate base can be resolved.
+ */
+function resolveUserCacheDir(): string | null {
+  const platform = os.platform();
+  const home = os.homedir();
+  if (platform === "darwin") {
+    return home ? path.join(home, "Library", "Caches") : null;
+  }
+  if (platform === "win32") {
+    return process.env.LOCALAPPDATA ?? (home ? path.join(home, "AppData", "Local") : null);
+  }
+  // Linux and other unices.
+  return process.env.XDG_CACHE_HOME ?? (home ? path.join(home, ".cache") : null);
+}
+
 // ---------------------------------------------------------------------------
-// Update notifier
+// Update notifier (external seam of the update subsystem)
 // ---------------------------------------------------------------------------
 
 type UpdateStatus = "idle" | "checking" | "available" | "installing" | "installed" | "error";
 
-async function checkForUpdate(
-  meta: TuiPluginMeta,
-  setLatestVersion: (v: string | null) => void,
-  setUpdateStatus: (s: UpdateStatus) => void,
-): Promise<void> {
-  if (meta.source === "file") return;
-  const installed = meta.version;
-  if (!installed) return;
-  setUpdateStatus("checking");
-  try {
-    const res = await fetch(NPM_REGISTRY, { headers: { Accept: "application/json" } });
-    if (!res.ok) return;
-    const data = (await res.json()) as { version?: string };
-    if (!data.version) return;
-    setLatestVersion(data.version);
-    if (data.version !== installed) setUpdateStatus("available");
-    else setUpdateStatus("idle");
-  } catch {
-    setUpdateStatus("idle");
-  }
-}
+type UpdateNotifier = {
+  latestVersion: () => string | null;
+  status: () => UpdateStatus;
+  error: () => string | null;
+  install: () => Promise<void>;
+  check: () => Promise<void>;
+};
 
 function specIsUnpinned(spec: string): boolean {
   if (!spec.includes("@")) return true;
@@ -117,69 +125,119 @@ function specIsUnpinned(spec: string): boolean {
   return false;
 }
 
-async function bumpPinnedSpecInConfig(
-  api: TuiApi,
-  oldSpec: string,
-  latest: string,
-): Promise<void> {
-  if (specIsUnpinned(oldSpec)) return;
-  const newSpec = `@jgabor/opencode-neuralwatt@${latest}`;
-  const candidates = [
-    path.join(api.state.path.config, "opencode.json"),
-    path.join(api.state.path.config, "opencode.jsonc"),
-    path.join(api.state.path.directory, ".opencode", "opencode.json"),
-    path.join(api.state.path.directory, ".opencode", "opencode.jsonc"),
-    path.join(api.state.path.directory, ".opencode", "tui.json"),
-  ];
-  const escaped = oldSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(escaped, "g");
-  await Promise.all(
-    candidates.map(async (file) => {
-      try {
-        const content = await fs.readFile(file, "utf8");
-        if (!content.includes(oldSpec)) return;
-        await fs.writeFile(file, content.replace(re, newSpec), "utf8");
-      } catch {
-        // file missing or unreadable; skip
-      }
-    }),
-  );
-}
+/**
+ * Owns the three update signals plus the check/install pipelines. The four
+ * formerly free functions (`checkForUpdate`, `specIsUnpinned`,
+ * `bumpPinnedSpecInConfig`, `installLatestVersion`) close over `{ api, meta }`
+ * and the signals, becoming private to this module.
+ *
+ * Cache-nuke path is resolved per-platform via `resolveUserCacheDir()` and
+ * is package-scoped (`packages/@jgabor/opencode-neuralwatt@latest`), not
+ * shared — it cannot affect other plugins or the shared `node_modules/`.
+ * Errors are swallowed so an unexpected cache layout doesn't abort install.
+ *
+ * Known issue (deferred — not introduced by this refactor):
+ *  - `tui.json` in the config-candidate list is not a documented opencode
+ *    config file — a phantom candidate silently skipped by the regex check.
+ */
+function createUpdateNotifier(opts: {
+  api: TuiApi;
+  meta: TuiPluginMeta;
+}): UpdateNotifier {
+  const { api, meta } = opts;
 
-async function installLatestVersion(
-  api: TuiApi,
-  meta: TuiPluginMeta,
-  latest: string,
-  setUpdateStatus: (s: UpdateStatus) => void,
-  setUpdateError: (e: string | null) => void,
-): Promise<void> {
-  setUpdateStatus("installing");
-  setUpdateError(null);
-  try {
-    if (specIsUnpinned(meta.spec)) {
-      const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-      if (home) {
-        const cacheDir = path.join(home, ".cache/opencode/packages/@jgabor/opencode-neuralwatt@latest");
-        await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
-      }
+  const [latestVersion, setLatestVersion] = createSignal<string | null>(null);
+  const [updateStatus, setUpdateStatus] = createSignal<UpdateStatus>("idle");
+  const [updateError, setUpdateError] = createSignal<string | null>(null);
+
+  // ---- check -------------------------------------------------------------
+
+  const check = async () => {
+    if (meta.source === "file") return;
+    const installed = meta.version;
+    if (!installed) return;
+    setUpdateStatus("checking");
+    try {
+      const res = await fetch(NPM_REGISTRY, { headers: { Accept: "application/json" } });
+      if (!res.ok) return;
+      const data = (await res.json()) as { version?: string };
+      if (!data.version) return;
+      setLatestVersion(data.version);
+      if (data.version !== installed) setUpdateStatus("available");
+      else setUpdateStatus("idle");
+    } catch {
+      setUpdateStatus("idle");
     }
-    const spec = `@jgabor/opencode-neuralwatt@${latest}`;
-    const result = await api.plugins.install(spec, { global: true });
-    if (!result.ok) throw new Error(result.message);
-    await bumpPinnedSpecInConfig(api, meta.spec, latest);
-    setUpdateStatus("installed");
-    api.ui.toast({
-      variant: "success",
-      title: "Neuralwatt",
-      message: `Updated to ${latest}. Restart OpenCode to apply.`,
-      duration: 8000,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    setUpdateStatus("error");
-    setUpdateError(msg);
-    api.ui.toast({ variant: "error", title: "Update failed", message: msg });
-  }
+  };
+
+  // ---- install -----------------------------------------------------------
+
+  const bumpPinnedSpecInConfig = async (oldSpec: string, latest: string): Promise<void> => {
+    if (specIsUnpinned(oldSpec)) return;
+    const newSpec = `@jgabor/opencode-neuralwatt@${latest}`;
+    const candidates = [
+      path.join(api.state.path.config, "opencode.json"),
+      path.join(api.state.path.config, "opencode.jsonc"),
+      path.join(api.state.path.directory, ".opencode", "opencode.json"),
+      path.join(api.state.path.directory, ".opencode", "opencode.jsonc"),
+      path.join(api.state.path.directory, ".opencode", "tui.json"),
+    ];
+    const escaped = oldSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped, "g");
+    await Promise.all(
+      candidates.map(async (file) => {
+        try {
+          const content = await fs.readFile(file, "utf8");
+          if (!content.includes(oldSpec)) return;
+          await fs.writeFile(file, content.replace(re, newSpec), "utf8");
+        } catch {
+          // file missing or unreadable; skip
+        }
+      }),
+    );
+  };
+
+  const install = async () => {
+    setUpdateStatus("installing");
+    setUpdateError(null);
+    try {
+      if (specIsUnpinned(meta.spec)) {
+        const cacheBase = resolveUserCacheDir();
+        if (cacheBase) {
+          const cacheDir = path.join(
+            cacheBase,
+            "opencode",
+            "packages",
+            "@jgabor",
+            "opencode-neuralwatt@latest",
+          );
+          // package-scoped: nukes only our cached @latest install, never the
+          // shared node_modules or other plugins' sibling dirs. Swallow errors
+          // so an unexpected cache layout doesn't abort the install.
+          await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+      const latest = latestVersion() ?? "";
+      const spec = `@jgabor/opencode-neuralwatt@${latest}`;
+      const result = await api.plugins.install(spec, { global: true });
+      if (!result.ok) throw new Error(result.message);
+      await bumpPinnedSpecInConfig(meta.spec, latest);
+      setUpdateStatus("installed");
+      api.ui.toast({
+        variant: "success",
+        title: "Neuralwatt",
+        message: `Updated to ${latest}. Restart OpenCode to apply.`,
+        duration: 8000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setUpdateStatus("error");
+      setUpdateError(msg);
+      api.ui.toast({ variant: "error", title: "Update failed", message: msg });
+    }
+  };
+
+  return { latestVersion, status: updateStatus, error: updateError, install, check };
 }
 
 // ---------------------------------------------------------------------------
@@ -307,21 +365,6 @@ const tui: TuiPlugin = async (api, _options, meta) => {
 
   const apiKey = process.env.NEURALWATT_API_KEY;
 
-  const [latestVersion, setLatestVersion] = createSignal<string | null>(null);
-  const [updateStatus, setUpdateStatus] = createSignal<UpdateStatus>("idle");
-  const [updateError, setUpdateError] = createSignal<string | null>(null);
-
-  const runInstall = () =>
-    installLatestVersion(
-      api as TuiApi,
-      meta,
-      latestVersion() ?? "",
-      setUpdateStatus,
-      setUpdateError,
-    );
-
-  void checkForUpdate(meta, setLatestVersion, setUpdateStatus);
-
   const fetchOnce = fetchQuotaOnce(apiKey);
   const store = createQuotaStore({
     apiKey,
@@ -330,9 +373,14 @@ const tui: TuiPlugin = async (api, _options, meta) => {
     onDispose: (fn) => api.lifecycle?.onDispose?.(fn),
   });
 
+  const notifier = createUpdateNotifier({ api: api as TuiApi, meta });
+
   // Initial fetch + periodic refresh.
   await store.refresh();
   store.startPolling();
+
+  // Check for plugin updates (fire-and-forget).
+  void notifier.check();
 
   // Register palette command and slash command.
   const commands = [
@@ -347,11 +395,8 @@ const tui: TuiPlugin = async (api, _options, meta) => {
         openPanel(
           api as QuotaSlotAPI,
           store,
+          notifier,
           meta,
-          latestVersion,
-          updateStatus,
-          updateError,
-          runInstall,
         ),
     },
   ];
@@ -379,19 +424,13 @@ const tui: TuiPlugin = async (api, _options, meta) => {
             <SidebarView
               api={api as QuotaSlotAPI}
               store={store}
-              latestVersion={latestVersion}
-              updateStatus={updateStatus}
-              updateError={updateError}
-              onInstall={runInstall}
+              notifier={notifier}
               onOpen={() =>
                 openPanel(
                   api as QuotaSlotAPI,
                   store,
+                  notifier,
                   meta,
-                  latestVersion,
-                  updateStatus,
-                  updateError,
-                  runInstall,
                 )
               }
             />
@@ -409,24 +448,18 @@ const tui: TuiPlugin = async (api, _options, meta) => {
 function openPanel(
   api: TuiApi,
   store: QuotaStore,
+  notifier: UpdateNotifier,
   meta: TuiPluginMeta,
-  latestVersion: () => string | null,
-  updateStatus: () => UpdateStatus,
-  updateError: () => string | null,
-  onInstall: () => Promise<void>,
 ) {
   api.ui.dialog.setSize("xlarge");
   api.ui.dialog.replace(() => (
     <QuotaPanel
       api={api}
       store={store}
+      notifier={notifier}
       onRefresh={store.refresh}
       onClose={() => api.ui.dialog.clear()}
       meta={meta}
-      latestVersion={latestVersion}
-      updateStatus={updateStatus}
-      updateError={updateError}
-      onInstall={onInstall}
     />
   ));
 }
@@ -434,13 +467,10 @@ function openPanel(
 function QuotaPanel(props: {
   api: TuiApi;
   store: QuotaStore;
+  notifier: UpdateNotifier;
   onRefresh: () => Promise<void>;
   onClose: () => void;
   meta: TuiPluginMeta;
-  latestVersion: () => string | null;
-  updateStatus: () => UpdateStatus;
-  updateError: () => string | null;
-  onInstall: () => Promise<void>;
 }) {
   const theme = props.api.theme.current;
 
@@ -509,10 +539,7 @@ function QuotaPanel(props: {
             <>
               <UpdateNotice
                 theme={theme}
-                latestVersion={props.latestVersion}
-                updateStatus={props.updateStatus}
-                updateError={props.updateError}
-                onInstall={props.onInstall}
+                notifier={props.notifier}
               />
               <Card theme={theme} title="Balance">
                 <Metric
@@ -722,12 +749,12 @@ function QuotaPanel(props: {
           {updated() ? `Updated ${formatDate(updated()!)}` : ""}
         </text>
         <box flexDirection="row" gap={1}>
-          {props.updateStatus() === "available" && props.latestVersion() ? (
+          {props.notifier.status() === "available" && props.notifier.latestVersion() ? (
             <FooterButton
               theme={theme}
-              label={`update ${props.latestVersion()}`}
+              label={`update ${props.notifier.latestVersion()}`}
               accent
-              onClick={props.onInstall}
+              onClick={props.notifier.install}
             />
           ) : null}
           <FooterButton
@@ -753,15 +780,12 @@ function QuotaPanel(props: {
 
 function UpdateNotice(props: {
   theme: Theme;
-  latestVersion: () => string | null;
-  updateStatus: () => UpdateStatus;
-  updateError: () => string | null;
-  onInstall: () => Promise<void>;
+  notifier: UpdateNotifier;
   compact?: boolean;
 }) {
   const theme = props.theme;
-  const status = props.updateStatus();
-  const latest = props.latestVersion();
+  const status = props.notifier.status();
+  const latest = props.notifier.latestVersion();
   const compact = props.compact ?? false;
 
   if (status === "available" && latest) {
@@ -770,7 +794,7 @@ function UpdateNotice(props: {
         flexDirection={compact ? "column" : "row"}
         justifyContent={compact ? "flex-start" : "space-between"}
         alignItems="flex-end"
-        onMouseUp={() => void props.onInstall()}
+        onMouseUp={() => void props.notifier.install()}
       >
         <box flexDirection="row" gap={1}>
           <text fg={theme.accent} attributes={TextAttributes.BOLD}>
@@ -798,7 +822,7 @@ function UpdateNotice(props: {
   if (status === "error") {
     return (
       <text fg={theme.error}>
-        {`Update failed: ${props.updateError() ?? "unknown error"}`}
+        {`Update failed: ${props.notifier.error() ?? "unknown error"}`}
       </text>
     );
   }
@@ -808,10 +832,7 @@ function UpdateNotice(props: {
 function SidebarView(props: {
   api: TuiApi;
   store: QuotaStore;
-  latestVersion: () => string | null;
-  updateStatus: () => UpdateStatus;
-  updateError: () => string | null;
-  onInstall: () => Promise<void>;
+  notifier: UpdateNotifier;
   onOpen: () => void;
 }) {
   const theme = props.api.theme.current;
@@ -940,10 +961,7 @@ function SidebarView(props: {
 
       <UpdateNotice
         theme={theme}
-        latestVersion={props.latestVersion}
-        updateStatus={props.updateStatus}
-        updateError={props.updateError}
-        onInstall={props.onInstall}
+        notifier={props.notifier}
         compact
       />
 
