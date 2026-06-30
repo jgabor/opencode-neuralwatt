@@ -70,6 +70,19 @@ const RATE_LIMIT_BUFFER_MS = 1_100;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1_500;
 
+type RetryPolicy = {
+  maxAttempts: number;
+  baseDelayMs: number;
+};
+
+const DEFAULT_RETRY_POLICY: RetryPolicy = {
+  maxAttempts: MAX_RETRIES + 1,
+  baseDelayMs: RETRY_BASE_DELAY_MS,
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 // ---------------------------------------------------------------------------
 // Update notifier
 // ---------------------------------------------------------------------------
@@ -170,6 +183,122 @@ async function installLatestVersion(
 }
 
 // ---------------------------------------------------------------------------
+// Quota store (external seam of the Quota subsystem)
+// ---------------------------------------------------------------------------
+
+type QuotaStore = {
+  quota: () => QuotaData | null;
+  error: () => string | null;
+  updatedAt: () => Date | null;
+  refresh: () => Promise<void>;
+  /** Begin the periodic refresh interval. Call after the initial `refresh()`
+   *  so the first polling tick doesn't race an in-flight initial fetch. */
+  startPolling: () => void;
+};
+
+/**
+ * Fetch transport with retry classification. Retries 429 and 5xx (and network
+ * throws) with exponential backoff; fails fast on 4xx other than 429 — those
+ * represent permanent errors (bad key, forbidden, not found) and retrying
+ * would only add latency. Honors `Retry-After` when finite and > 0.
+ *
+ * Internal seam of the Quota store: not part of the store interface.
+ */
+async function fetchWithRetry(
+  task: () => Promise<Response>,
+  policy: RetryPolicy,
+): Promise<Response> {
+  let lastErr: Error | null = null;
+
+  for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
+    let failFast: Error | null = null;
+    let nextDelay: number | null = null;
+
+    try {
+      const response = await task();
+      if (response.ok) return response;
+
+      const retryable = response.status === 429 || response.status >= 500;
+      if (retryable) {
+        lastErr = new Error(`${response.status} ${response.statusText}`);
+        const retryAfter = Number(response.headers.get("retry-after"));
+        nextDelay = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : policy.baseDelayMs * Math.pow(2, attempt);
+      } else {
+        const body = await response.text().catch(() => "");
+        failFast = new Error(
+          `${response.status} ${response.statusText}${body ? ` — ${body}` : ""}`,
+        );
+      }
+    } catch (err) {
+      // Network throw or body-read throw — retryable.
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      nextDelay = policy.baseDelayMs * Math.pow(2, attempt);
+    }
+
+    if (failFast) {
+      // 4xx (except 429) — permanent error, do not retry.
+      throw failFast;
+    }
+
+    if (attempt < policy.maxAttempts - 1 && nextDelay !== null) {
+      await sleep(nextDelay);
+    }
+  }
+
+  throw lastErr ?? new Error("fetchWithRetry exhausted with no error");
+}
+
+function fetchQuotaOnce(apiKey: string | undefined): () => Promise<Response> {
+  let lastFetchAt = 0;
+  return async () => {
+    const now = Date.now();
+    if (now - lastFetchAt < RATE_LIMIT_BUFFER_MS) {
+      await sleep(RATE_LIMIT_BUFFER_MS - (now - lastFetchAt));
+    }
+    lastFetchAt = Date.now();
+    return fetch(`${API_BASE}/quota`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+  };
+}
+
+function createQuotaStore(opts: {
+  apiKey: string | undefined;
+  transport: () => Promise<Response>;
+  intervalMs: number;
+  onDispose: (fn: () => void) => void;
+}): QuotaStore {
+  const [quota, setQuota] = createSignal<QuotaData | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
+  const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
+
+  const refresh = async () => {
+    if (!opts.apiKey) {
+      setError("NEURALWATT_API_KEY is not set");
+      return;
+    }
+    try {
+      const response = await opts.transport();
+      const data = (await response.json()) as QuotaData;
+      setQuota(data);
+      setUpdatedAt(new Date());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const startPolling = () => {
+    const interval = setInterval(refresh, opts.intervalMs);
+    opts.onDispose(() => clearInterval(interval));
+  };
+
+  return { quota, error, updatedAt, refresh, startPolling };
+}
+
+// ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
 
@@ -178,9 +307,6 @@ const tui: TuiPlugin = async (api, _options, meta) => {
 
   const apiKey = process.env.NEURALWATT_API_KEY;
 
-  const [quota, setQuota] = createSignal<QuotaData | null>(null);
-  const [error, setError] = createSignal<string | null>(null);
-  const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
   const [latestVersion, setLatestVersion] = createSignal<string | null>(null);
   const [updateStatus, setUpdateStatus] = createSignal<UpdateStatus>("idle");
   const [updateError, setUpdateError] = createSignal<string | null>(null);
@@ -196,74 +322,17 @@ const tui: TuiPlugin = async (api, _options, meta) => {
 
   void checkForUpdate(meta, setLatestVersion, setUpdateStatus);
 
-  let lastFetchAt = 0;
-
-  const sleep = (ms: number) =>
-    new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-  const fetchQuotaOnce = async (): Promise<Response> => {
-    const now = Date.now();
-    if (now - lastFetchAt < RATE_LIMIT_BUFFER_MS) {
-      await sleep(RATE_LIMIT_BUFFER_MS - (now - lastFetchAt));
-    }
-    lastFetchAt = Date.now();
-    return fetch(`${API_BASE}/quota`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-  };
-
-  const fetchQuota = async () => {
-    if (!apiKey) {
-      setError("NEURALWATT_API_KEY is not set");
-      return;
-    }
-
-    let lastErr: Error | null = null;
-
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const response = await fetchQuotaOnce();
-
-        if (response.status === 429 && attempt < MAX_RETRIES) {
-          const retryAfter = Number(response.headers.get("retry-after"));
-          const delay =
-            Number.isFinite(retryAfter) && retryAfter > 0
-              ? retryAfter * 1000
-              : RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
-          await sleep(delay);
-          continue;
-        }
-
-        if (!response.ok) {
-          const body = await response.text().catch(() => "");
-          throw new Error(
-            `${response.status} ${response.statusText}${body ? ` — ${body}` : ""}`,
-          );
-        }
-
-        const data = (await response.json()) as QuotaData;
-        setQuota(data);
-        setUpdatedAt(new Date());
-        setError(null);
-        return;
-      } catch (err) {
-        lastErr = err instanceof Error ? err : new Error(String(err));
-        if (attempt < MAX_RETRIES) {
-          await sleep(RETRY_BASE_DELAY_MS * Math.pow(2, attempt));
-          continue;
-        }
-      }
-    }
-
-    if (lastErr) {
-      setError(lastErr.message);
-    }
-  };
+  const fetchOnce = fetchQuotaOnce(apiKey);
+  const store = createQuotaStore({
+    apiKey,
+    transport: () => fetchWithRetry(fetchOnce, DEFAULT_RETRY_POLICY),
+    intervalMs: REFRESH_INTERVAL_MS,
+    onDispose: (fn) => api.lifecycle?.onDispose?.(fn),
+  });
 
   // Initial fetch + periodic refresh.
-  await fetchQuota();
-  const interval = setInterval(fetchQuota, REFRESH_INTERVAL_MS);
-  api.lifecycle?.onDispose?.(() => clearInterval(interval));
+  await store.refresh();
+  store.startPolling();
 
   // Register palette command and slash command.
   const commands = [
@@ -277,10 +346,7 @@ const tui: TuiPlugin = async (api, _options, meta) => {
       run: () =>
         openPanel(
           api as QuotaSlotAPI,
-          quota,
-          error,
-          updatedAt,
-          fetchQuota,
+          store,
           meta,
           latestVersion,
           updateStatus,
@@ -312,9 +378,7 @@ const tui: TuiPlugin = async (api, _options, meta) => {
           return (
             <SidebarView
               api={api as QuotaSlotAPI}
-              quota={quota}
-              error={error}
-              updatedAt={updatedAt}
+              store={store}
               latestVersion={latestVersion}
               updateStatus={updateStatus}
               updateError={updateError}
@@ -322,10 +386,7 @@ const tui: TuiPlugin = async (api, _options, meta) => {
               onOpen={() =>
                 openPanel(
                   api as QuotaSlotAPI,
-                  quota,
-                  error,
-                  updatedAt,
-                  fetchQuota,
+                  store,
                   meta,
                   latestVersion,
                   updateStatus,
@@ -347,10 +408,7 @@ const tui: TuiPlugin = async (api, _options, meta) => {
 
 function openPanel(
   api: TuiApi,
-  quota: () => QuotaData | null,
-  error: () => string | null,
-  updatedAt: () => Date | null,
-  refresh: () => Promise<void>,
+  store: QuotaStore,
   meta: TuiPluginMeta,
   latestVersion: () => string | null,
   updateStatus: () => UpdateStatus,
@@ -361,10 +419,8 @@ function openPanel(
   api.ui.dialog.replace(() => (
     <QuotaPanel
       api={api}
-      quota={quota}
-      error={error}
-      updatedAt={updatedAt}
-      onRefresh={refresh}
+      store={store}
+      onRefresh={store.refresh}
       onClose={() => api.ui.dialog.clear()}
       meta={meta}
       latestVersion={latestVersion}
@@ -377,9 +433,7 @@ function openPanel(
 
 function QuotaPanel(props: {
   api: TuiApi;
-  quota: () => QuotaData | null;
-  error: () => string | null;
-  updatedAt: () => Date | null;
+  store: QuotaStore;
   onRefresh: () => Promise<void>;
   onClose: () => void;
   meta: TuiPluginMeta;
@@ -390,9 +444,9 @@ function QuotaPanel(props: {
 }) {
   const theme = props.api.theme.current;
 
-  const q = createMemo(() => props.quota());
-  const err = createMemo(() => props.error());
-  const updated = createMemo(() => props.updatedAt());
+  const q = createMemo(() => props.store.quota());
+  const err = createMemo(() => props.store.error());
+  const updated = createMemo(() => props.store.updatedAt());
 
   const burnRate = createMemo(() => (q() ? burnRateCurrentMonth(q()!) : 0));
   const sub = createMemo(() => q()?.subscription ?? null);
@@ -753,9 +807,7 @@ function UpdateNotice(props: {
 
 function SidebarView(props: {
   api: TuiApi;
-  quota: () => QuotaData | null;
-  error: () => string | null;
-  updatedAt: () => Date | null;
+  store: QuotaStore;
   latestVersion: () => string | null;
   updateStatus: () => UpdateStatus;
   updateError: () => string | null;
@@ -764,8 +816,8 @@ function SidebarView(props: {
 }) {
   const theme = props.api.theme.current;
 
-  const q = createMemo(() => props.quota());
-  const err = createMemo(() => props.error());
+  const q = createMemo(() => props.store.quota());
+  const err = createMemo(() => props.store.error());
 
   const creditColor = createMemo<ThemeColor>(() =>
     q() && q()!.balance.credits_remaining_usd <= 0 ? "error" : "primary",
