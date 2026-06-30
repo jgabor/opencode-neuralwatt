@@ -902,59 +902,49 @@ function SidebarView(props: {
       {err() ? (
         <text fg={theme.error}>{err()}</text>
       ) : q() ? (
-        <>
-          <box flexDirection="column" gap={0}>
-            <LegendRow
-              theme={theme}
-              marker="█"
-              markerColor={creditColor()}
-              label="Credits used"
-              value={formatCurrency(q()!.balance.credits_used_usd)}
-            />
-            <LegendRow
-              theme={theme}
-              marker="░"
-              markerColor={
-                q()!.balance.credits_remaining_usd <= 0 ? "error" : "borderSubtle"
-              }
-              label="Credits remaining"
-              value={formatCurrency(q()!.balance.credits_remaining_usd)}
-            />
-            <LegendRow
-              theme={theme}
-              marker="🜂"
-              markerColor="warning"
-              label="Credits burn rate"
-              value={estimateDuration(
-                q()!.balance.credits_remaining_usd,
-                burnRateCurrentMonth(q()!),
-              )}
-            />
-          </box>
-
-          <SidebarUsageBlock
-            theme={theme}
-            creditUsedPct={creditUsedPct()}
-            creditColor={creditColor()}
-            hasKwh={hasKwh()}
-            sub={sub()!}
-            kwhUsedPct={kwhUsedPct()}
-            kwhColor={kwhColor() ?? "primary"}
-            inOverage={inOverage()}
-            kwhBurnRate={
-              sub()
-                ? estimateDuration(
-                    sub()!.kwh_remaining ?? 0,
-                    burnRateKwh(sub()!, q()!.snapshot_at),
-                  )
-                : "—"
-            }
-            monthCost={q()!.usage.current_month.cost_usd}
-            monthKwh={q()!.usage.current_month.energy_kwh}
-            lifetimeCost={q()!.usage.lifetime.cost_usd}
-            lifetimeKwh={q()!.usage.lifetime.energy_kwh}
-          />
-        </>
+        <SidebarUsageBlock
+          theme={theme}
+          creditUsedPct={creditUsedPct()}
+          creditColor={creditColor()}
+          creditsUsed={formatCurrency(q()!.balance.credits_used_usd)}
+          creditsRemaining={formatCurrency(q()!.balance.credits_remaining_usd)}
+          creditsRemainingMarkerColor={
+            q()!.balance.credits_remaining_usd <= 0 ? "error" : "borderSubtle"
+          }
+          creditsBurnRate={
+            hasKwh()
+              ? "—"
+              : estimateDuration(
+                  q()!.balance.credits_remaining_usd,
+                  burnRateCurrentMonth(q()!),
+                )
+          }
+          hasKwh={hasKwh()}
+          sub={sub()!}
+          kwhUsedPct={kwhUsedPct()}
+          kwhColor={kwhColor() ?? "primary"}
+          inOverage={inOverage()}
+          kwhBurnRate={
+            sub()
+              ? estimateDuration(
+                  sub()!.kwh_remaining ?? 0,
+                  burnRateKwh(sub()!, q()!.snapshot_at),
+                )
+              : "—"
+          }
+          resetsIn={
+            sub()
+              ? daysUntilPeriodReset(
+                  sub()!.current_period_end,
+                  q()!.snapshot_at,
+                )
+              : "—"
+          }
+          monthCost={q()!.usage.current_month.cost_usd}
+          monthKwh={q()!.usage.current_month.energy_kwh}
+          lifetimeCost={q()!.usage.lifetime.cost_usd}
+          lifetimeKwh={q()!.usage.lifetime.energy_kwh}
+        />
       ) : (
         <text fg={theme.textMuted}>Loading…</text>
       )}
@@ -1016,7 +1006,6 @@ function CombinedBar(props: {
     <box
       width="100%"
       height={1}
-      marginTop={1}
       backgroundColor={props.theme.borderSubtle}
     >
       {pct > 0 ? (
@@ -1034,12 +1023,17 @@ function SidebarUsageBlock(props: {
   theme: Theme;
   creditUsedPct: number;
   creditColor: ThemeColor;
+  creditsUsed: string;
+  creditsRemaining: string;
+  creditsRemainingMarkerColor: ThemeColor;
+  creditsBurnRate: string;
   hasKwh: boolean;
   sub: Subscription;
   kwhUsedPct: number;
   kwhColor: ThemeColor;
   inOverage: boolean;
   kwhBurnRate: string;
+  resetsIn: string;
   monthCost: number;
   monthKwh: number;
   lifetimeCost: number;
@@ -1060,57 +1054,88 @@ function SidebarUsageBlock(props: {
     </box>
   );
 
-  if (props.hasKwh) {
-    return (
-      <box width="100%" flexDirection="column" gap={1}>
-        <CombinedBar
+  const creditsSection = (
+    <>
+      <box width="100%" flexDirection="column" gap={0}>
+        <LegendRow
           theme={props.theme}
-          percent={props.creditUsedPct}
-          color={props.creditColor}
+          marker="█"
+          markerColor={props.creditColor}
+          label="Credits used"
+          value={props.creditsUsed}
         />
-        <box width="100%" flexDirection="column" gap={0}>
-          <LegendRow
-            theme={props.theme}
-            marker="█"
-            markerColor={props.kwhColor}
-            label="kWh used"
-            value={`${formatNumber(props.sub.kwh_used, 2)} kWh`}
-          />
-          <LegendRow
-            theme={props.theme}
-            marker="░"
-            markerColor="borderSubtle"
-            label="kWh remaining"
-            value={`${formatNumber(props.sub.kwh_remaining, 2)} kWh`}
-          />
+        <LegendRow
+          theme={props.theme}
+          marker="░"
+          markerColor={props.creditsRemainingMarkerColor}
+          label="Credits remaining"
+          value={props.creditsRemaining}
+        />
+        {!props.hasKwh ? (
           <LegendRow
             theme={props.theme}
             marker="🜂"
             markerColor="warning"
-            label="kWh burn rate"
-            value={props.kwhBurnRate}
+            label="Credits burn rate"
+            value={props.creditsBurnRate}
           />
-        </box>
-        <CombinedBar
-          theme={props.theme}
-          percent={props.kwhUsedPct}
-          color={props.kwhColor}
-        />
-        {props.inOverage ? (
-          <text fg={props.theme.error}>In overage</text>
         ) : null}
-        {metrics}
       </box>
-    );
-  }
-
-  return (
-    <box width="100%" flexDirection="column" gap={1}>
       <CombinedBar
         theme={props.theme}
         percent={props.creditUsedPct}
         color={props.creditColor}
       />
+    </>
+  );
+
+  const kwhSection = props.hasKwh ? (
+    <>
+      <box width="100%" flexDirection="column" gap={0}>
+        <LegendRow
+          theme={props.theme}
+          marker="█"
+          markerColor={props.kwhColor}
+          label="kWh used"
+          value={`${formatNumber(props.sub.kwh_used, 2)} kWh`}
+        />
+        <LegendRow
+          theme={props.theme}
+          marker="░"
+          markerColor="borderSubtle"
+          label="kWh remaining"
+          value={`${formatNumber(props.sub.kwh_remaining, 2)} kWh`}
+        />
+        <LegendRow
+          theme={props.theme}
+          marker="🜂"
+          markerColor="warning"
+          label="kWh burn rate"
+          value={props.kwhBurnRate}
+        />
+        <LegendRow
+          theme={props.theme}
+          marker="↻"
+          markerColor="warning"
+          label="kWh resets in"
+          value={props.resetsIn}
+        />
+      </box>
+      <CombinedBar
+        theme={props.theme}
+        percent={props.kwhUsedPct}
+        color={props.kwhColor}
+      />
+      {props.inOverage ? (
+        <text fg={props.theme.error}>In overage</text>
+      ) : null}
+    </>
+  ) : null;
+
+  return (
+    <box width="100%" flexDirection="column" gap={1}>
+      {kwhSection}
+      {creditsSection}
       {metrics}
     </box>
   );
@@ -1272,6 +1297,17 @@ function daysElapsedInPeriod(start: string, snapshotAt: string): number {
   if (Number.isNaN(startMs) || Number.isNaN(snapMs)) return 1;
   const diffMs = snapMs - startMs;
   return Math.max(1, diffMs / 86_400_000);
+}
+
+function daysUntilPeriodReset(periodEnd: string | null, snapshotAt: string): string {
+  if (!periodEnd) return "—";
+  const endMs = new Date(periodEnd).getTime();
+  const snapMs = new Date(snapshotAt).getTime();
+  if (Number.isNaN(endMs) || Number.isNaN(snapMs)) return "—";
+  const days = (endMs - snapMs) / 86_400_000;
+  if (days <= 0) return "0d";
+  if (days < 1) return "<1d";
+  return `${Math.round(days)}d`;
 }
 
 function estimateDuration(balance: number, burnRate: number): string {

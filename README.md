@@ -82,4 +82,4 @@ The plugin is a TUI-only OpenCode plugin module, which is automatically loaded a
 
 ---
 
-**License:** [MIT](./LICENSE) · **Author:** [Jonathan Gabor](https://jgabor.se) · **Version:** 0.3.1
+**License:** [MIT](./LICENSE) · **Author:** [Jonathan Gabor](https://jgabor.se) · **Version:** 0.3.2
