@@ -1,11 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 
 import { TextAttributes } from "@opentui/core";
-import { createMemo, createSignal, type JSX } from "solid-js";
+import { createMemo, createSignal, Show, type JSX } from "solid-js";
 import type { TuiPlugin, TuiPluginModule, TuiPluginMeta } from "@opencode-ai/plugin/tui";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -83,6 +84,25 @@ const DEFAULT_RETRY_POLICY: RetryPolicy = {
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Plugin's own version, read once from the package.json sitting next to this
+ * module. Used as the `-dev` fallback when opencode's plugin metadata does
+ * not supply a resolved version (e.g. file-source / unpackaged loads).
+ * Resolved relative to `import.meta.url` so it works in both the repo and an
+ * installed `node_modules/@jgabor/opencode-neuralwatt/` layout.
+ */
+const PACKAGE_VERSION: string = (() => {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(
+      readFileSync(path.join(here, "package.json"), "utf8"),
+    ) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 /**
  * Resolve the per-platform user cache directory, mirroring Go's
@@ -506,7 +526,7 @@ function QuotaPanel(props: {
             Neuralwatt
           </text>
           <text fg={theme.textMuted}>
-            {props.meta.version ? `v${props.meta.version}` : "Quota"}
+            {props.meta.version ? `v${props.meta.version}` : `${PACKAGE_VERSION}-dev`}
           </text>
         </box>
         <text fg={theme.textMuted} onMouseUp={props.onClose}>
@@ -784,49 +804,42 @@ function UpdateNotice(props: {
   compact?: boolean;
 }) {
   const theme = props.theme;
-  const status = props.notifier.status();
-  const latest = props.notifier.latestVersion();
   const compact = props.compact ?? false;
 
-  if (status === "available" && latest) {
-    return (
-      <box
-        flexDirection={compact ? "column" : "row"}
-        justifyContent={compact ? "flex-start" : "space-between"}
-        alignItems="flex-end"
-        onMouseUp={() => void props.notifier.install()}
-      >
-        <box flexDirection="row" gap={1}>
-          <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-            {`⤓ Update: ${latest}`}
-          </text>
+  return (
+    <>
+      <Show when={props.notifier.status() === "available" && props.notifier.latestVersion()}>
+        <box
+          flexDirection={compact ? "column" : "row"}
+          justifyContent={compact ? "flex-start" : "space-between"}
+          alignItems="flex-end"
+          onMouseUp={() => void props.notifier.install()}
+        >
+          <box flexDirection="row" gap={1}>
+            <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+              {`⤓ Update: ${props.notifier.latestVersion()}`}
+            </text>
+          </box>
+          <text fg={theme.textMuted}>click to update</text>
         </box>
-        <text fg={theme.textMuted}>click to update</text>
-      </box>
-    );
-  }
-  if (status === "installing") {
-    return (
-      <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-        Installing update…
-      </text>
-    );
-  }
-  if (status === "installed") {
-    return (
-      <text fg={theme.success} attributes={TextAttributes.BOLD}>
-        {`Updated to ${latest}. Restart to apply.`}
-      </text>
-    );
-  }
-  if (status === "error") {
-    return (
-      <text fg={theme.error}>
-        {`Update failed: ${props.notifier.error() ?? "unknown error"}`}
-      </text>
-    );
-  }
-  return null;
+      </Show>
+      <Show when={props.notifier.status() === "installing"}>
+        <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+          Installing update…
+        </text>
+      </Show>
+      <Show when={props.notifier.status() === "installed"}>
+        <text fg={theme.success} attributes={TextAttributes.BOLD}>
+          {`Updated to ${props.notifier.latestVersion()}. Restart to apply.`}
+        </text>
+      </Show>
+      <Show when={props.notifier.status() === "error"}>
+        <text fg={theme.error}>
+          {`Update failed: ${props.notifier.error() ?? "unknown error"}`}
+        </text>
+      </Show>
+    </>
+  );
 }
 
 function SidebarView(props: {
