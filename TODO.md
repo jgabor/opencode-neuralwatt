@@ -18,5 +18,5 @@
 
 ## ⇢ Annoying — new features from existing data
 
-- [ ] Session trend sparkline. Keep a small ring buffer of `{ snapshot_at, credits_remaining_usd, kwh_remaining }` samples across refresh cycles during the session, and render a compact trend line in the sidebar. Pure client-side, no new API call. Useful for spotting burn acceleration.
-- [ ] Efficiency metrics. Compute kWh-per-1M-tokens and cost-per-1M-tokens from the existing `usage.current_month` and `usage.lifetime` buckets. Lets users compare energy vs token accounting methods concretely. Moderate effort (computation + rendering).
+- [x] Session trend sparkline. Keep a small ring buffer of `{ snapshot_at, credits_remaining_usd, kwh_remaining }` samples across refresh cycles during the session, and render a compact trend line in the sidebar. Pure client-side, no new API call. Useful for spotting burn acceleration.
+- [x] Efficiency metrics. Compute kWh-per-1M-tokens and cost-per-1M-tokens from the existing `usage.current_month` and `usage.lifetime` buckets. Lets users compare energy vs token accounting methods concretely. Moderate effort (computation + rendering).

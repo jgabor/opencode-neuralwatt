@@ -290,10 +290,16 @@ function createUpdateNotifier(opts: {
 // Quota store (external seam of the Quota subsystem)
 // ---------------------------------------------------------------------------
 
+type QuotaSample = {
+  snapshot_at: string;
+  credits_remaining_usd: number;
+};
+
 type QuotaStore = {
   quota: () => QuotaData | null;
   error: () => string | null;
   updatedAt: () => Date | null;
+  history: () => readonly QuotaSample[];
   refresh: () => Promise<void>;
   /** Begin the periodic refresh interval. Call after the initial `refresh()`
    *  so the first polling tick doesn't race an in-flight initial fetch. */
@@ -430,6 +436,9 @@ function createQuotaStore(opts: {
   const [quota, setQuota] = createSignal<QuotaData | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
+  const [history, setHistory] = createSignal<QuotaSample[]>([]);
+
+  const HISTORY_MAX = 120;
 
   let inFlight = false;
   let prevAlertState: AlertState | null = null;
@@ -452,6 +461,14 @@ function createQuotaStore(opts: {
       setUpdatedAt(new Date());
       setError(null);
 
+      setHistory((prev) => {
+        const sample: QuotaSample = {
+          snapshot_at: data.snapshot_at,
+          credits_remaining_usd: data.balance.credits_remaining_usd,
+        };
+        return [...prev, sample].slice(-HISTORY_MAX);
+      });
+
       const nextAlertState = deriveAlertState(data);
       if (prevAlertState) {
         for (const alert of diffTransitions(prevAlertState, nextAlertState)) {
@@ -471,7 +488,7 @@ function createQuotaStore(opts: {
     opts.onDispose(() => clearInterval(interval));
   };
 
-  return { quota, error, updatedAt, refresh, startPolling };
+  return { quota, error, updatedAt, history, refresh, startPolling };
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +900,41 @@ function QuotaPanel(props: {
                 ) : null}
               </Card>
 
+              <Card theme={theme} title="Efficiency">
+                <Metric
+                  theme={theme}
+                  label="Month kWh/1M tok"
+                  value={`${efficiencyPer1MTokens(
+                    q()!.usage.current_month.energy_kwh,
+                    q()!.usage.current_month.tokens,
+                  )} kWh`}
+                />
+                <Metric
+                  theme={theme}
+                  label="Month $/1M tok"
+                  value={`$${efficiencyPer1MTokens(
+                    q()!.usage.current_month.cost_usd,
+                    q()!.usage.current_month.tokens,
+                  )}`}
+                />
+                <Metric
+                  theme={theme}
+                  label="Lifetime kWh/1M tok"
+                  value={`${efficiencyPer1MTokens(
+                    q()!.usage.lifetime.energy_kwh,
+                    q()!.usage.lifetime.tokens,
+                  )} kWh`}
+                />
+                <Metric
+                  theme={theme}
+                  label="Lifetime $/1M tok"
+                  value={`$${efficiencyPer1MTokens(
+                    q()!.usage.lifetime.cost_usd,
+                    q()!.usage.lifetime.tokens,
+                  )}`}
+                />
+              </Card>
+
               {allowance() ? (
                 <Card theme={theme} title="Key Allowance">
                   <Metric
@@ -1128,6 +1180,13 @@ function SidebarView(props: {
       ) : (
         <text fg={theme.textMuted}>Loading…</text>
       )}
+
+      {props.store.history().length >= 2 ? (
+        <box flexDirection="row" gap={1}>
+          <text fg={theme.textMuted}>trend</text>
+          <text fg={theme[creditColor()]}>{renderSparkline(props.store.history())}</text>
+        </box>
+      ) : null}
 
       <UpdateNotice
         theme={theme}
@@ -1499,6 +1558,31 @@ function estimateDuration(balance: number, burnRate: number): string {
   if (days < 30) return `~${Math.round(days)}d`;
   if (days < 365) return `~${Math.round(days / 30)}mo`;
   return `~${(days / 365).toFixed(1)}y`;
+}
+
+function efficiencyPer1MTokens(value: number, tokens: number): string {
+  if (!Number.isFinite(value) || !Number.isFinite(tokens) || tokens <= 0) return "—";
+  return (value / tokens * 1_000_000).toFixed(2);
+}
+
+const SPARK_BLOCKS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+
+function renderSparkline(samples: readonly QuotaSample[]): string {
+  if (samples.length < 2) return "";
+  const values = samples.map((s) => s.credits_remaining_usd);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min;
+  if (range === 0) return SPARK_BLOCKS[3].repeat(values.length);
+  return values
+    .map((v) => {
+      const idx = Math.min(
+        SPARK_BLOCKS.length - 1,
+        Math.max(0, Math.floor(((v - min) / range) * (SPARK_BLOCKS.length - 1))),
+      );
+      return SPARK_BLOCKS[idx];
+    })
+    .join("");
 }
 
 const plugin: TuiPluginModule & { id: string } = {
