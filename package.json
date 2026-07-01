@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jgabor/opencode-neuralwatt",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "description": "OpenCode TUI plugin that shows Neuralwatt account quota, usage, and burn rate in a sidebar widget and panel.",
   "exports": {

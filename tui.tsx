@@ -762,6 +762,42 @@ function QuotaPanel(props: {
                 ) : null}
               </Card>
 
+              <Card theme={theme} title="Burn rate">
+                <Metric
+                  theme={theme}
+                  label="Current month"
+                  value={`${formatCurrency(burnRate())}/day`}
+                />
+                <Metric
+                  theme={theme}
+                  label="Credits left"
+                  value={estimateDuration(
+                    q()!.balance.credits_remaining_usd,
+                    burnRate(),
+                  )}
+                />
+                {sub() ? (
+                  <>
+                    <Metric
+                      theme={theme}
+                      label="kWh/day"
+                      value={`${formatNumber(
+                        burnRateKwh(sub()!, q()!.snapshot_at),
+                        3,
+                      )} kWh`}
+                    />
+                    <Metric
+                      theme={theme}
+                      label="kWh left"
+                      value={estimateDuration(
+                        sub()!.kwh_remaining ?? 0,
+                        burnRateKwh(sub()!, q()!.snapshot_at),
+                      )}
+                    />
+                  </>
+                ) : null}
+              </Card>
+
               {sub() ? (
                 <Card theme={theme} title="Subscription">
                   <Metric
@@ -851,64 +887,40 @@ function QuotaPanel(props: {
                 />
               </Card>
 
-              <Card theme={theme} title="Usage (lifetime)">
-                <Metric
-                  theme={theme}
-                  label="Cost"
-                  value={formatCurrency(q()!.usage.lifetime.cost_usd)}
-                />
-                <Metric
-                  theme={theme}
-                  label="Requests"
-                  value={formatInteger(q()!.usage.lifetime.requests)}
-                />
-                <Metric
-                  theme={theme}
-                  label="Tokens"
-                  value={formatInteger(q()!.usage.lifetime.tokens)}
-                />
-                <Metric
-                  theme={theme}
-                  label="Energy"
-                  value={`${formatNumber(q()!.usage.lifetime.energy_kwh, 3)} kWh`}
-                />
-              </Card>
-
-              <Card theme={theme} title="Burn rate">
-                <Metric
-                  theme={theme}
-                  label="Current month"
-                  value={`${formatCurrency(burnRate())}/day`}
-                />
-                <Metric
-                  theme={theme}
-                  label="Credits left"
-                  value={estimateDuration(
-                    q()!.balance.credits_remaining_usd,
-                    burnRate(),
-                  )}
-                />
-                {sub() ? (
-                  <>
-                    <Metric
-                      theme={theme}
-                      label="kWh/day"
-                      value={`${formatNumber(
-                        burnRateKwh(sub()!, q()!.snapshot_at),
-                        3,
-                      )} kWh`}
-                    />
-                    <Metric
-                      theme={theme}
-                      label="kWh left"
-                      value={estimateDuration(
-                        sub()!.kwh_remaining ?? 0,
-                        burnRateKwh(sub()!, q()!.snapshot_at),
-                      )}
-                    />
-                  </>
-                ) : null}
-              </Card>
+              {allowance() ? (
+                <Card theme={theme} title="Key Allowance">
+                  <Metric
+                    theme={theme}
+                    label="Key"
+                    value={q()!.key.name ?? "—"}
+                  />
+                  <Metric
+                    theme={theme}
+                    label="Limit"
+                    value={formatCurrency(allowance()!.limit_usd)}
+                  />
+                  <Metric
+                    theme={theme}
+                    label="Period"
+                    value={allowance()!.period}
+                  />
+                  <Metric
+                    theme={theme}
+                    label="Spent"
+                    value={formatCurrency(allowance()!.spent_usd)}
+                  />
+                  <Metric
+                    theme={theme}
+                    label="Remaining"
+                    value={formatCurrency(allowance()!.remaining_usd)}
+                  />
+                  <Metric
+                    theme={theme}
+                    label="Blocked"
+                    value={allowance()!.blocked ? "yes" : "no"}
+                  />
+                </Card>
+              ) : null}
 
               <Card theme={theme} title="Efficiency">
                 <Metric
@@ -945,40 +957,28 @@ function QuotaPanel(props: {
                 />
               </Card>
 
-              {allowance() ? (
-                <Card theme={theme} title="Key Allowance">
-                  <Metric
-                    theme={theme}
-                    label="Key"
-                    value={q()!.key.name ?? "—"}
-                  />
-                  <Metric
-                    theme={theme}
-                    label="Limit"
-                    value={formatCurrency(allowance()!.limit_usd)}
-                  />
-                  <Metric
-                    theme={theme}
-                    label="Period"
-                    value={allowance()!.period}
-                  />
-                  <Metric
-                    theme={theme}
-                    label="Spent"
-                    value={formatCurrency(allowance()!.spent_usd)}
-                  />
-                  <Metric
-                    theme={theme}
-                    label="Remaining"
-                    value={formatCurrency(allowance()!.remaining_usd)}
-                  />
-                  <Metric
-                    theme={theme}
-                    label="Blocked"
-                    value={allowance()!.blocked ? "yes" : "no"}
-                  />
-                </Card>
-              ) : null}
+              <Card theme={theme} title="Usage (lifetime)">
+                <Metric
+                  theme={theme}
+                  label="Cost"
+                  value={formatCurrency(q()!.usage.lifetime.cost_usd)}
+                />
+                <Metric
+                  theme={theme}
+                  label="Requests"
+                  value={formatInteger(q()!.usage.lifetime.requests)}
+                />
+                <Metric
+                  theme={theme}
+                  label="Tokens"
+                  value={formatInteger(q()!.usage.lifetime.tokens)}
+                />
+                <Metric
+                  theme={theme}
+                  label="Energy"
+                  value={`${formatNumber(q()!.usage.lifetime.energy_kwh, 3)} kWh`}
+                />
+              </Card>
             </>
           ) : !err() ? (
             <Card theme={theme} title="Loading">

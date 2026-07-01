@@ -49,8 +49,8 @@ The plugin reads `NEURALWATT_API_KEY` at startup and refreshes quota every 15s.
   </picture>
 </a>
 
-- **Sidebar widget** — always-visible credit/kWh/burn-rate summary. Click it to open the detail panel.
-- **`/nw`** (alias `/neuralwatt`) — opens the full quota panel (balance, subscription, usage, burn-rate estimates, key allowance). Use `refresh` / `close` footer buttons.
+- **Sidebar widget** — always-visible credit/kWh/burn-rate summary with monthly efficiency metrics. Click it to open the detail panel.
+- **`/nw`** (alias `/neuralwatt`) — opens the full quota panel (balance, burn rate, subscription, monthly usage, key allowance, efficiency, lifetime usage). Use `refresh` / `close` footer buttons.
 
 ## Update notifier
 
@@ -65,11 +65,16 @@ No TTL — the check fires every restart, against the npm registry's `latest` di
 
 ## Status fields shown
 
-- Balance: remaining / used / total credits, accounting method (energy vs token)
-- Subscription: plan, status, period, auto-renew, kWh used/remaining, overage
+- Balance: remaining / used / total credits, accounting method (energy vs token), rate limit tier, overage cap with headroom bar
+- Subscription: plan (with billing interval), status, period start/end, reset countdown, auto-renew, kWh used/remaining, overage
 - Usage: current month and lifetime (cost, requests, tokens, energy)
 - Burn rate: cost/day and estimated runway for both credits and kWh
+- Efficiency: kWh per 1M tokens and cost per 1M tokens (current month and lifetime)
 - Key allowance: limit, period, spent, remaining, blocked
+
+## Alerts
+
+The plugin toasts on quota state transitions — entering overage, exhausting credits, or an API key becoming blocked — so critical changes surface without watching the sidebar.
 
 ## How it works
 
@@ -82,4 +87,4 @@ The plugin is a TUI-only OpenCode plugin module, which is automatically loaded a
 
 ---
 
-**License:** [MIT](./LICENSE) · **Author:** [Jonathan Gabor](https://jgabor.se) · **Version:** 0.3.3
+**License:** [MIT](./LICENSE) · **Author:** [Jonathan Gabor](https://jgabor.se) · **Version:** 0.3.4
