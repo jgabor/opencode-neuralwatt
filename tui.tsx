@@ -61,6 +61,19 @@ type QuotaData = {
   };
 };
 
+type QuotaAlertKind = "overage" | "credits_exhausted" | "key_blocked";
+
+type QuotaAlert = {
+  kind: QuotaAlertKind;
+  message: string;
+};
+
+type AlertState = {
+  inOverage: boolean;
+  creditsExhausted: boolean;
+  keyBlocked: boolean;
+};
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -373,17 +386,53 @@ function isQuotaData(value: unknown): value is QuotaData {
   );
 }
 
+function deriveAlertState(data: QuotaData): AlertState {
+  return {
+    inOverage: Boolean(data.subscription?.in_overage),
+    creditsExhausted: data.balance.credits_remaining_usd <= 0,
+    keyBlocked: Boolean(data.key.allowance?.blocked),
+  };
+}
+
+function diffTransitions(
+  prev: AlertState,
+  next: AlertState,
+): QuotaAlert[] {
+  const alerts: QuotaAlert[] = [];
+  if (next.inOverage && !prev.inOverage) {
+    alerts.push({
+      kind: "overage",
+      message: "Subscription entered overage — additional usage may incur charges.",
+    });
+  }
+  if (next.creditsExhausted && !prev.creditsExhausted) {
+    alerts.push({
+      kind: "credits_exhausted",
+      message: "Credits exhausted — API requests may be blocked.",
+    });
+  }
+  if (next.keyBlocked && !prev.keyBlocked) {
+    alerts.push({
+      kind: "key_blocked",
+      message: "API key is now blocked — requests will be rejected.",
+    });
+  }
+  return alerts;
+}
+
 function createQuotaStore(opts: {
   apiKey: string | undefined;
   transport: () => Promise<Response>;
   intervalMs: number;
   onDispose: (fn: () => void) => void;
+  onTransition?: (alert: QuotaAlert) => void;
 }): QuotaStore {
   const [quota, setQuota] = createSignal<QuotaData | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
 
   let inFlight = false;
+  let prevAlertState: AlertState | null = null;
 
   const refresh = async () => {
     if (!opts.apiKey) {
@@ -402,6 +451,14 @@ function createQuotaStore(opts: {
       setQuota(data);
       setUpdatedAt(new Date());
       setError(null);
+
+      const nextAlertState = deriveAlertState(data);
+      if (prevAlertState) {
+        for (const alert of diffTransitions(prevAlertState, nextAlertState)) {
+          opts.onTransition?.(alert);
+        }
+      }
+      prevAlertState = nextAlertState;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -432,6 +489,10 @@ const tui: TuiPlugin = async (api, _options, meta) => {
     transport: () => fetchWithRetry(fetchOnce, DEFAULT_RETRY_POLICY),
     intervalMs: REFRESH_INTERVAL_MS,
     onDispose: (fn) => api.lifecycle?.onDispose?.(fn),
+    onTransition: (alert) => {
+      const variant = alert.kind === "overage" ? "warning" : "error";
+      api.ui.toast({ variant, title: "Neuralwatt", message: alert.message, duration: 8000 });
+    },
   });
 
   const notifier = createUpdateNotifier({ api: api as TuiApi, meta });
