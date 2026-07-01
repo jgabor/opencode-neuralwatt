@@ -6,9 +6,9 @@
 
 ## ⇉ Degraded — fetched but never displayed
 
-- [ ] Display `limits.overage_limit_usd` in the Balance or Subscription card with a secondary `CombinedBar` showing overage headroom. Currently fetched and discarded — most valuable at the moment a user enters or approaches overage.
-- [ ] Display `limits.rate_limit_tier` as a badge next to the plan name, or in the sidebar header row next to the accounting method. Currently fetched and discarded.
-- [ ] Display `subscription.billing_interval` next to the plan name in the Subscription card. Currently fetched and discarded.
+- [x] Display `limits.overage_limit_usd` in the Balance or Subscription card with a secondary `CombinedBar` showing overage headroom. Currently fetched and discarded — most valuable at the moment a user enters or approaches overage.
+- [x] Display `limits.rate_limit_tier` as a badge next to the plan name, or in the sidebar header row next to the accounting method. Currently fetched and discarded.
+- [x] Display `subscription.billing_interval` next to the plan name in the Subscription card. Currently fetched and discarded.
 
 ## → Normal — modal/sidebar display parity
 

@@ -604,6 +604,7 @@ function QuotaPanel(props: {
   const burnRate = createMemo(() => (q() ? burnRateCurrentMonth(q()!) : 0));
   const sub = createMemo(() => q()?.subscription ?? null);
   const allowance = createMemo(() => q()?.key.allowance ?? null);
+  const overageLimit = createMemo(() => q()?.limits.overage_limit_usd ?? null);
   const accountingColor = createMemo<ThemeColor>(() =>
     q()?.balance.accounting_method === "energy" ? "success" : "info",
   );
@@ -686,6 +687,11 @@ function QuotaPanel(props: {
                   value={q()!.balance.accounting_method}
                   valueColor={accountingColor()}
                 />
+                <Metric
+                  theme={theme}
+                  label="Rate limit tier"
+                  value={q()!.limits.rate_limit_tier}
+                />
                 <CombinedBar
                   theme={theme}
                   percent={
@@ -701,6 +707,32 @@ function QuotaPanel(props: {
                       : "primary"
                   }
                 />
+                {overageLimit() != null && overageLimit()! > 0 ? (
+                  <>
+                    <Metric
+                      theme={theme}
+                      label="Overage cap"
+                      value={formatCurrency(overageLimit())}
+                    />
+                    <CombinedBar
+                      theme={theme}
+                      percent={
+                        (Math.max(
+                          0,
+                          q()!.balance.credits_used_usd -
+                            q()!.balance.total_credits_usd,
+                        ) /
+                          overageLimit()!) *
+                        100
+                      }
+                      color={
+                        q()!.balance.credits_remaining_usd <= 0
+                          ? "error"
+                          : "warning"
+                      }
+                    />
+                  </>
+                ) : null}
               </Card>
 
               {sub() ? (
@@ -708,7 +740,11 @@ function QuotaPanel(props: {
                   <Metric
                     theme={theme}
                     label="Plan"
-                    value={sub()!.plan}
+                    value={
+                      sub()!.billing_interval
+                        ? `${sub()!.plan} (${sub()!.billing_interval})`
+                        : sub()!.plan
+                    }
                   />
                   <Metric
                     theme={theme}
