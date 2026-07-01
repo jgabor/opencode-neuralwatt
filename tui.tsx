@@ -71,6 +71,7 @@ const REFRESH_INTERVAL_MS = 15_000;
 const RATE_LIMIT_BUFFER_MS = 1_100;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1_500;
+const RETRY_AFTER_MAX_MS = 60_000;
 
 type RetryPolicy = {
   maxAttempts: number;
@@ -140,8 +141,13 @@ type UpdateNotifier = {
 };
 
 function specIsUnpinned(spec: string): boolean {
-  if (!spec.includes("@")) return true;
-  if (spec.endsWith("@latest")) return true;
+  // A scoped package name starts with "@" — that leading "@" is the
+  // scope sigil, not a version separator. The version (if present) is
+  // the segment after the LAST "@" that is not at position 0.
+  const lastAt = spec.lastIndexOf("@");
+  if (lastAt <= 0) return true;
+  const version = spec.slice(lastAt + 1);
+  if (version === "" || version === "latest") return true;
   return false;
 }
 
@@ -179,9 +185,15 @@ function createUpdateNotifier(opts: {
     setUpdateStatus("checking");
     try {
       const res = await fetch(NPM_REGISTRY, { headers: { Accept: "application/json" } });
-      if (!res.ok) return;
+      if (!res.ok) {
+        setUpdateStatus("idle");
+        return;
+      }
       const data = (await res.json()) as { version?: string };
-      if (!data.version) return;
+      if (!data.version) {
+        setUpdateStatus("idle");
+        return;
+      }
       setLatestVersion(data.version);
       if (data.version !== installed) setUpdateStatus("available");
       else setUpdateStatus("idle");
@@ -203,13 +215,13 @@ function createUpdateNotifier(opts: {
       path.join(api.state.path.directory, ".opencode", "tui.json"),
     ];
     const escaped = oldSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(escaped, "g");
+    const re = new RegExp(`"${escaped}"`, "g");
     await Promise.all(
       candidates.map(async (file) => {
         try {
           const content = await fs.readFile(file, "utf8");
-          if (!content.includes(oldSpec)) return;
-          await fs.writeFile(file, content.replace(re, newSpec), "utf8");
+          if (!content.includes(`"${oldSpec}"`)) return;
+          await fs.writeFile(file, content.replace(re, () => `"${newSpec}"`), "utf8");
         } catch {
           // file missing or unreadable; skip
         }
@@ -218,6 +230,7 @@ function createUpdateNotifier(opts: {
   };
 
   const install = async () => {
+    if (updateStatus() === "installing") return;
     setUpdateStatus("installing");
     setUpdateError(null);
     try {
@@ -301,7 +314,7 @@ async function fetchWithRetry(
         lastErr = new Error(`${response.status} ${response.statusText}`);
         const retryAfter = Number(response.headers.get("retry-after"));
         nextDelay = Number.isFinite(retryAfter) && retryAfter > 0
-          ? retryAfter * 1000
+          ? Math.min(retryAfter * 1000, RETRY_AFTER_MAX_MS)
           : policy.baseDelayMs * Math.pow(2, attempt);
       } else {
         const body = await response.text().catch(() => "");
@@ -342,6 +355,24 @@ function fetchQuotaOnce(apiKey: string | undefined): () => Promise<Response> {
   };
 }
 
+function isQuotaData(value: unknown): value is QuotaData {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const balance = v.balance as Record<string, unknown> | undefined;
+  const usage = v.usage as Record<string, unknown> | undefined;
+  return (
+    typeof v.snapshot_at === "string" &&
+    balance != null &&
+    typeof balance.credits_remaining_usd === "number" &&
+    typeof balance.total_credits_usd === "number" &&
+    typeof balance.credits_used_usd === "number" &&
+    typeof balance.accounting_method === "string" &&
+    usage != null &&
+    typeof usage.lifetime === "object" && usage.lifetime !== null &&
+    typeof usage.current_month === "object" && usage.current_month !== null
+  );
+}
+
 function createQuotaStore(opts: {
   apiKey: string | undefined;
   transport: () => Promise<Response>;
@@ -352,19 +383,29 @@ function createQuotaStore(opts: {
   const [error, setError] = createSignal<string | null>(null);
   const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
 
+  let inFlight = false;
+
   const refresh = async () => {
     if (!opts.apiKey) {
       setError("NEURALWATT_API_KEY is not set");
       return;
     }
+    if (inFlight) return;
+    inFlight = true;
     try {
       const response = await opts.transport();
-      const data = (await response.json()) as QuotaData;
+      const data: unknown = await response.json();
+      if (!isQuotaData(data)) {
+        setError("Received malformed quota data from Neuralwatt");
+        return;
+      }
       setQuota(data);
       setUpdatedAt(new Date());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      inFlight = false;
     }
   };
 
@@ -394,10 +435,6 @@ const tui: TuiPlugin = async (api, _options, meta) => {
   });
 
   const notifier = createUpdateNotifier({ api: api as TuiApi, meta });
-
-  // Initial fetch + periodic refresh.
-  await store.refresh();
-  store.startPolling();
 
   // Check for plugin updates (fire-and-forget).
   void notifier.check();
@@ -459,6 +496,11 @@ const tui: TuiPlugin = async (api, _options, meta) => {
       },
     });
   }
+
+  // Initial fetch + periodic refresh (fire-and-forget so a slow or
+  // unreachable API cannot block command/slot registration).
+  void store.refresh();
+  store.startPolling();
 };
 
 // ---------------------------------------------------------------------------
@@ -933,7 +975,7 @@ function SidebarView(props: {
                 )
           }
           hasKwh={hasKwh()}
-          sub={sub()!}
+          sub={sub()}
           kwhUsedPct={kwhUsedPct()}
           kwhColor={kwhColor() ?? "primary"}
           inOverage={inOverage()}
@@ -1041,7 +1083,7 @@ function SidebarUsageBlock(props: {
   creditsRemainingMarkerColor: ThemeColor;
   creditsBurnRate: string;
   hasKwh: boolean;
-  sub: Subscription;
+  sub: Subscription | null;
   kwhUsedPct: number;
   kwhColor: ThemeColor;
   inOverage: boolean;
@@ -1102,7 +1144,7 @@ function SidebarUsageBlock(props: {
     </>
   );
 
-  const kwhSection = props.hasKwh ? (
+  const kwhSection = props.hasKwh && props.sub ? (
     <>
       <box width="100%" flexDirection="column" gap={0}>
         <LegendRow
