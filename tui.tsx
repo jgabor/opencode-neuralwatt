@@ -2,7 +2,11 @@
 
 import { TextAttributes } from "@opentui/core";
 import { createMemo, createSignal, Show, type JSX } from "solid-js";
-import type { TuiPlugin, TuiPluginModule, TuiPluginMeta } from "@opencode-ai/plugin/tui";
+import type {
+  TuiPlugin,
+  TuiPluginModule,
+  TuiPluginMeta,
+} from "@opencode-ai/plugin/tui";
 import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -79,7 +83,8 @@ type AlertState = {
 // ---------------------------------------------------------------------------
 
 const API_BASE = "https://api.neuralwatt.com/v1";
-const NPM_REGISTRY = "https://registry.npmjs.org/@jgabor%2Fopencode-neuralwatt/latest";
+const NPM_REGISTRY =
+  "https://registry.npmjs.org/@jgabor%2Fopencode-neuralwatt/latest";
 const REFRESH_INTERVAL_MS = 15_000;
 const RATE_LIMIT_BUFFER_MS = 1_100;
 const MAX_RETRIES = 3;
@@ -133,17 +138,28 @@ function resolveUserCacheDir(): string | null {
     return home ? path.join(home, "Library", "Caches") : null;
   }
   if (platform === "win32") {
-    return process.env.LOCALAPPDATA ?? (home ? path.join(home, "AppData", "Local") : null);
+    return (
+      process.env.LOCALAPPDATA ??
+      (home ? path.join(home, "AppData", "Local") : null)
+    );
   }
   // Linux and other unices.
-  return process.env.XDG_CACHE_HOME ?? (home ? path.join(home, ".cache") : null);
+  return (
+    process.env.XDG_CACHE_HOME ?? (home ? path.join(home, ".cache") : null)
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Update notifier (external seam of the update subsystem)
 // ---------------------------------------------------------------------------
 
-type UpdateStatus = "idle" | "checking" | "available" | "installing" | "installed" | "error";
+type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "installing"
+  | "installed"
+  | "error";
 
 type UpdateNotifier = {
   latestVersion: () => string | null;
@@ -197,7 +213,9 @@ function createUpdateNotifier(opts: {
     if (!installed) return;
     setUpdateStatus("checking");
     try {
-      const res = await fetch(NPM_REGISTRY, { headers: { Accept: "application/json" } });
+      const res = await fetch(NPM_REGISTRY, {
+        headers: { Accept: "application/json" },
+      });
       if (!res.ok) {
         setUpdateStatus("idle");
         return;
@@ -217,7 +235,10 @@ function createUpdateNotifier(opts: {
 
   // ---- install -----------------------------------------------------------
 
-  const bumpPinnedSpecInConfig = async (oldSpec: string, latest: string): Promise<void> => {
+  const bumpPinnedSpecInConfig = async (
+    oldSpec: string,
+    latest: string,
+  ): Promise<void> => {
     if (specIsUnpinned(oldSpec)) return;
     const newSpec = `@jgabor/opencode-neuralwatt@${latest}`;
     const candidates = [
@@ -234,7 +255,11 @@ function createUpdateNotifier(opts: {
         try {
           const content = await fs.readFile(file, "utf8");
           if (!content.includes(`"${oldSpec}"`)) return;
-          await fs.writeFile(file, content.replace(re, () => `"${newSpec}"`), "utf8");
+          await fs.writeFile(
+            file,
+            content.replace(re, () => `"${newSpec}"`),
+            "utf8",
+          );
         } catch {
           // file missing or unreadable; skip
         }
@@ -260,7 +285,9 @@ function createUpdateNotifier(opts: {
           // package-scoped: nukes only our cached @latest install, never the
           // shared node_modules or other plugins' sibling dirs. Swallow errors
           // so an unexpected cache layout doesn't abort the install.
-          await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+          await fs
+            .rm(cacheDir, { recursive: true, force: true })
+            .catch(() => {});
         }
       }
       const latest = latestVersion() ?? "";
@@ -283,23 +310,23 @@ function createUpdateNotifier(opts: {
     }
   };
 
-  return { latestVersion, status: updateStatus, error: updateError, install, check };
+  return {
+    latestVersion,
+    status: updateStatus,
+    error: updateError,
+    install,
+    check,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Quota store (external seam of the Quota subsystem)
 // ---------------------------------------------------------------------------
 
-type QuotaSample = {
-  snapshot_at: string;
-  credits_remaining_usd: number;
-};
-
 type QuotaStore = {
   quota: () => QuotaData | null;
   error: () => string | null;
   updatedAt: () => Date | null;
-  history: () => readonly QuotaSample[];
   refresh: () => Promise<void>;
   /** Begin the periodic refresh interval. Call after the initial `refresh()`
    *  so the first polling tick doesn't race an in-flight initial fetch. */
@@ -332,9 +359,10 @@ async function fetchWithRetry(
       if (retryable) {
         lastErr = new Error(`${response.status} ${response.statusText}`);
         const retryAfter = Number(response.headers.get("retry-after"));
-        nextDelay = Number.isFinite(retryAfter) && retryAfter > 0
-          ? Math.min(retryAfter * 1000, RETRY_AFTER_MAX_MS)
-          : policy.baseDelayMs * Math.pow(2, attempt);
+        nextDelay =
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(retryAfter * 1000, RETRY_AFTER_MAX_MS)
+            : policy.baseDelayMs * Math.pow(2, attempt);
       } else {
         const body = await response.text().catch(() => "");
         failFast = new Error(
@@ -387,8 +415,10 @@ function isQuotaData(value: unknown): value is QuotaData {
     typeof balance.credits_used_usd === "number" &&
     typeof balance.accounting_method === "string" &&
     usage != null &&
-    typeof usage.lifetime === "object" && usage.lifetime !== null &&
-    typeof usage.current_month === "object" && usage.current_month !== null
+    typeof usage.lifetime === "object" &&
+    usage.lifetime !== null &&
+    typeof usage.current_month === "object" &&
+    usage.current_month !== null
   );
 }
 
@@ -400,15 +430,13 @@ function deriveAlertState(data: QuotaData): AlertState {
   };
 }
 
-function diffTransitions(
-  prev: AlertState,
-  next: AlertState,
-): QuotaAlert[] {
+function diffTransitions(prev: AlertState, next: AlertState): QuotaAlert[] {
   const alerts: QuotaAlert[] = [];
   if (next.inOverage && !prev.inOverage) {
     alerts.push({
       kind: "overage",
-      message: "Subscription entered overage — additional usage may incur charges.",
+      message:
+        "Subscription entered overage — additional usage may incur charges.",
     });
   }
   if (next.creditsExhausted && !prev.creditsExhausted) {
@@ -436,9 +464,6 @@ function createQuotaStore(opts: {
   const [quota, setQuota] = createSignal<QuotaData | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [updatedAt, setUpdatedAt] = createSignal<Date | null>(null);
-  const [history, setHistory] = createSignal<QuotaSample[]>([]);
-
-  const HISTORY_MAX = 120;
 
   let inFlight = false;
   let prevAlertState: AlertState | null = null;
@@ -461,14 +486,6 @@ function createQuotaStore(opts: {
       setUpdatedAt(new Date());
       setError(null);
 
-      setHistory((prev) => {
-        const sample: QuotaSample = {
-          snapshot_at: data.snapshot_at,
-          credits_remaining_usd: data.balance.credits_remaining_usd,
-        };
-        return [...prev, sample].slice(-HISTORY_MAX);
-      });
-
       const nextAlertState = deriveAlertState(data);
       if (prevAlertState) {
         for (const alert of diffTransitions(prevAlertState, nextAlertState)) {
@@ -488,7 +505,7 @@ function createQuotaStore(opts: {
     opts.onDispose(() => clearInterval(interval));
   };
 
-  return { quota, error, updatedAt, history, refresh, startPolling };
+  return { quota, error, updatedAt, refresh, startPolling };
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +525,12 @@ const tui: TuiPlugin = async (api, _options, meta) => {
     onDispose: (fn) => api.lifecycle?.onDispose?.(fn),
     onTransition: (alert) => {
       const variant = alert.kind === "overage" ? "warning" : "error";
-      api.ui.toast({ variant, title: "Neuralwatt", message: alert.message, duration: 8000 });
+      api.ui.toast({
+        variant,
+        title: "Neuralwatt",
+        message: alert.message,
+        duration: 8000,
+      });
     },
   });
 
@@ -526,13 +548,7 @@ const tui: TuiPlugin = async (api, _options, meta) => {
       category: "Neuralwatt",
       slashName: "nw",
       slashAliases: ["neuralwatt"],
-      run: () =>
-        openPanel(
-          api as QuotaSlotAPI,
-          store,
-          notifier,
-          meta,
-        ),
+      run: () => openPanel(api as QuotaSlotAPI, store, notifier, meta),
     },
   ];
 
@@ -561,12 +577,7 @@ const tui: TuiPlugin = async (api, _options, meta) => {
               store={store}
               notifier={notifier}
               onOpen={() =>
-                openPanel(
-                  api as QuotaSlotAPI,
-                  store,
-                  notifier,
-                  meta,
-                )
+                openPanel(api as QuotaSlotAPI, store, notifier, meta)
               }
             />
           );
@@ -647,7 +658,9 @@ function QuotaPanel(props: {
             Neuralwatt
           </text>
           <text fg={theme.textMuted}>
-            {props.meta.version ? `v${props.meta.version}` : `${PACKAGE_VERSION}-dev`}
+            {props.meta.version
+              ? `v${props.meta.version}`
+              : `${PACKAGE_VERSION}-dev`}
           </text>
         </box>
         <text fg={theme.textMuted} onMouseUp={props.onClose}>
@@ -678,10 +691,7 @@ function QuotaPanel(props: {
 
           {q() ? (
             <>
-              <UpdateNotice
-                theme={theme}
-                notifier={props.notifier}
-              />
+              <UpdateNotice theme={theme} notifier={props.notifier} />
               <Card theme={theme} title="Balance">
                 <Metric
                   theme={theme}
@@ -988,7 +998,8 @@ function QuotaPanel(props: {
           {updated() ? `Updated ${formatDate(updated()!)}` : ""}
         </text>
         <box flexDirection="row" gap={1}>
-          {props.notifier.status() === "available" && props.notifier.latestVersion() ? (
+          {props.notifier.status() === "available" &&
+          props.notifier.latestVersion() ? (
             <FooterButton
               theme={theme}
               label={`update ${props.notifier.latestVersion()}`}
@@ -1014,7 +1025,7 @@ function QuotaPanel(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar widget (DCP-style)
+// Sidebar widget
 // ---------------------------------------------------------------------------
 
 function UpdateNotice(props: {
@@ -1027,7 +1038,12 @@ function UpdateNotice(props: {
 
   return (
     <>
-      <Show when={props.notifier.status() === "available" && props.notifier.latestVersion()}>
+      <Show
+        when={
+          props.notifier.status() === "available" &&
+          props.notifier.latestVersion()
+        }
+      >
         <box
           flexDirection={compact ? "column" : "row"}
           justifyContent={compact ? "flex-start" : "space-between"}
@@ -1174,25 +1190,13 @@ function SidebarView(props: {
           }
           monthCost={q()!.usage.current_month.cost_usd}
           monthKwh={q()!.usage.current_month.energy_kwh}
-          lifetimeCost={q()!.usage.lifetime.cost_usd}
-          lifetimeKwh={q()!.usage.lifetime.energy_kwh}
+          monthTokens={q()!.usage.current_month.tokens}
         />
       ) : (
         <text fg={theme.textMuted}>Loading…</text>
       )}
 
-      {props.store.history().length >= 2 ? (
-        <box flexDirection="row" gap={1}>
-          <text fg={theme.textMuted}>trend</text>
-          <text fg={theme[creditColor()]}>{renderSparkline(props.store.history())}</text>
-        </box>
-      ) : null}
-
-      <UpdateNotice
-        theme={theme}
-        notifier={props.notifier}
-        compact
-      />
+      <UpdateNotice theme={theme} notifier={props.notifier} compact />
 
       <Divider theme={theme} />
     </box>
@@ -1242,11 +1246,7 @@ function CombinedBar(props: {
   const pct = Math.max(0, Math.min(100, props.percent));
 
   return (
-    <box
-      width="100%"
-      height={1}
-      backgroundColor={props.theme.borderSubtle}
-    >
+    <box width="100%" height={1} backgroundColor={props.theme.borderSubtle}>
       {pct > 0 ? (
         <box
           width={`${pct}%`}
@@ -1275,20 +1275,29 @@ function SidebarUsageBlock(props: {
   resetsIn: string;
   monthCost: number;
   monthKwh: number;
-  lifetimeCost: number;
-  lifetimeKwh: number;
+  monthTokens: number;
 }) {
   const metrics = (
     <box width="100%" flexDirection="column" gap={0}>
       <MetricRow
         theme={props.theme}
-        label="Month"
-        value={`${formatCurrency(props.monthCost)} / ${formatNumber(props.monthKwh, 0)} kWh`}
+        label="Monthly usage"
+        value={formatCurrency(props.monthCost)}
       />
       <MetricRow
         theme={props.theme}
-        label="Lifetime"
-        value={`${formatCurrency(props.lifetimeCost)} / ${formatNumber(props.lifetimeKwh, 0)} kWh`}
+        label=""
+        value={`${formatNumber(props.monthKwh, 0)} kWh`}
+      />
+      <MetricRow
+        theme={props.theme}
+        label="Efficiency"
+        value={`${efficiencyPer1MTokens(props.monthKwh, props.monthTokens)} kWh/1M`}
+      />
+      <MetricRow
+        theme={props.theme}
+        label=""
+        value={`$${efficiencyPer1MTokens(props.monthCost, props.monthTokens)}/1M`}
       />
     </box>
   );
@@ -1328,48 +1337,49 @@ function SidebarUsageBlock(props: {
     </>
   );
 
-  const kwhSection = props.hasKwh && props.sub ? (
-    <>
-      <box width="100%" flexDirection="column" gap={0}>
-        <LegendRow
+  const kwhSection =
+    props.hasKwh && props.sub ? (
+      <>
+        <box width="100%" flexDirection="column" gap={0}>
+          <LegendRow
+            theme={props.theme}
+            marker="█"
+            markerColor={props.kwhColor}
+            label="kWh used"
+            value={`${formatNumber(props.sub.kwh_used, 2)} kWh`}
+          />
+          <LegendRow
+            theme={props.theme}
+            marker="░"
+            markerColor="borderSubtle"
+            label="kWh remaining"
+            value={`${formatNumber(props.sub.kwh_remaining, 2)} kWh`}
+          />
+          <LegendRow
+            theme={props.theme}
+            marker="🜂"
+            markerColor="warning"
+            label="kWh burn rate"
+            value={props.kwhBurnRate}
+          />
+          <LegendRow
+            theme={props.theme}
+            marker="↻"
+            markerColor="warning"
+            label="kWh resets in"
+            value={props.resetsIn}
+          />
+        </box>
+        <CombinedBar
           theme={props.theme}
-          marker="█"
-          markerColor={props.kwhColor}
-          label="kWh used"
-          value={`${formatNumber(props.sub.kwh_used, 2)} kWh`}
+          percent={props.kwhUsedPct}
+          color={props.kwhColor}
         />
-        <LegendRow
-          theme={props.theme}
-          marker="░"
-          markerColor="borderSubtle"
-          label="kWh remaining"
-          value={`${formatNumber(props.sub.kwh_remaining, 2)} kWh`}
-        />
-        <LegendRow
-          theme={props.theme}
-          marker="🜂"
-          markerColor="warning"
-          label="kWh burn rate"
-          value={props.kwhBurnRate}
-        />
-        <LegendRow
-          theme={props.theme}
-          marker="↻"
-          markerColor="warning"
-          label="kWh resets in"
-          value={props.resetsIn}
-        />
-      </box>
-      <CombinedBar
-        theme={props.theme}
-        percent={props.kwhUsedPct}
-        color={props.kwhColor}
-      />
-      {props.inOverage ? (
-        <text fg={props.theme.error}>In overage</text>
-      ) : null}
-    </>
-  ) : null;
+        {props.inOverage ? (
+          <text fg={props.theme.error}>In overage</text>
+        ) : null}
+      </>
+    ) : null;
 
   return (
     <box width="100%" flexDirection="column" gap={1}>
@@ -1451,9 +1461,8 @@ function FooterButton(props: {
     : accent
       ? props.theme.accent
       : props.theme.backgroundElement;
-  const fg = primary || accent
-    ? props.theme.selectedListItemText
-    : props.theme.text;
+  const fg =
+    primary || accent ? props.theme.selectedListItemText : props.theme.text;
   return (
     <box
       paddingLeft={2}
@@ -1538,7 +1547,10 @@ function daysElapsedInPeriod(start: string, snapshotAt: string): number {
   return Math.max(1, diffMs / 86_400_000);
 }
 
-function daysUntilPeriodReset(periodEnd: string | null, snapshotAt: string): string {
+function daysUntilPeriodReset(
+  periodEnd: string | null,
+  snapshotAt: string,
+): string {
   if (!periodEnd) return "—";
   const endMs = new Date(periodEnd).getTime();
   const snapMs = new Date(snapshotAt).getTime();
@@ -1561,28 +1573,9 @@ function estimateDuration(balance: number, burnRate: number): string {
 }
 
 function efficiencyPer1MTokens(value: number, tokens: number): string {
-  if (!Number.isFinite(value) || !Number.isFinite(tokens) || tokens <= 0) return "—";
-  return (value / tokens * 1_000_000).toFixed(2);
-}
-
-const SPARK_BLOCKS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-
-function renderSparkline(samples: readonly QuotaSample[]): string {
-  if (samples.length < 2) return "";
-  const values = samples.map((s) => s.credits_remaining_usd);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min;
-  if (range === 0) return SPARK_BLOCKS[3].repeat(values.length);
-  return values
-    .map((v) => {
-      const idx = Math.min(
-        SPARK_BLOCKS.length - 1,
-        Math.max(0, Math.floor(((v - min) / range) * (SPARK_BLOCKS.length - 1))),
-      );
-      return SPARK_BLOCKS[idx];
-    })
-    .join("");
+  if (!Number.isFinite(value) || !Number.isFinite(tokens) || tokens <= 0)
+    return "—";
+  return ((value / tokens) * 1_000_000).toFixed(2);
 }
 
 const plugin: TuiPluginModule & { id: string } = {
