@@ -12,9 +12,9 @@
 
 ## → Normal — modal/sidebar display parity
 
-- [ ] Add kWh/day burn rate row to the modal's Burn rate card. The computation already exists (`burnRateKwh`) and is shown in the sidebar, but the modal only shows credit/day.
-- [ ] Add kWh runway estimate to the modal's Burn rate card. Shown in the sidebar via `estimateDuration(kwh_remaining, burnRateKwh)`, absent from the modal.
-- [ ] Add period reset countdown (`daysUntilPeriodReset`) to the modal's Subscription card. Computed and shown in the sidebar, missing from the modal.
+- [x] Add kWh/day burn rate row to the modal's Burn rate card. The computation already exists (`burnRateKwh`) and is shown in the sidebar, but the modal only shows credit/day.
+- [x] Add kWh runway estimate to the modal's Burn rate card. Shown in the sidebar via `estimateDuration(kwh_remaining, burnRateKwh)`, absent from the modal.
+- [x] Add period reset countdown (`daysUntilPeriodReset`) to the modal's Subscription card. Computed and shown in the sidebar, missing from the modal.
 
 ## ⇢ Annoying — new features from existing data
 

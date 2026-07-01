@@ -763,6 +763,14 @@ function QuotaPanel(props: {
                   />
                   <Metric
                     theme={theme}
+                    label="Resets in"
+                    value={daysUntilPeriodReset(
+                      sub()!.current_period_end,
+                      q()!.snapshot_at,
+                    )}
+                  />
+                  <Metric
+                    theme={theme}
                     label="Auto renew"
                     value={sub()!.auto_renew ? "yes" : "no"}
                   />
@@ -853,6 +861,26 @@ function QuotaPanel(props: {
                     burnRate(),
                   )}
                 />
+                {sub() ? (
+                  <>
+                    <Metric
+                      theme={theme}
+                      label="kWh/day"
+                      value={`${formatNumber(
+                        burnRateKwh(sub()!, q()!.snapshot_at),
+                        3,
+                      )} kWh`}
+                    />
+                    <Metric
+                      theme={theme}
+                      label="kWh left"
+                      value={estimateDuration(
+                        sub()!.kwh_remaining ?? 0,
+                        burnRateKwh(sub()!, q()!.snapshot_at),
+                      )}
+                    />
+                  </>
+                ) : null}
               </Card>
 
               {allowance() ? (
